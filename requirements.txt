@@ -4,3 +4,5 @@ requests
 pandas
 openpyxl
 lxml
+selenium
+webdriver-manager
