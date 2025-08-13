@@ -6,62 +6,49 @@ import re
 import time
 from urllib.parse import urljoin, urlparse
 import random
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.core.os_manager import ChromeType
 
 # --- Configuration ---
-
-# Using a more comprehensive set of headers to better mimic a real browser
-HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.google.com/",
-    "Sec-Ch-Ua": '"Not/A)Brand";v="99", "Google Chrome";v="115", "Chromium";v="115"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "cross-site",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-}
 BASE_URL = "https://www.jumia.co.ke"
 
-def get_proxy(proxies_list):
-    """Returns a dictionary for the requests library with a randomly chosen proxy."""
-    if not proxies_list:
+@st.cache_resource
+def get_driver():
+    """
+    Sets up and returns a Selenium WebDriver instance for Chrome.
+    Caches the driver to avoid re-initializing on every script rerun.
+    """
+    options = Options()
+    options.add_argument("--disable-gpu")
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    
+    # This will download the correct ChromeDriver version for the environment
+    service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+    
+    driver = webdriver.Chrome(service=service, options=options)
+    return driver
+
+def make_request_with_selenium(url, driver):
+    """
+    Makes a request using Selenium to handle dynamic JavaScript content.
+    """
+    try:
+        driver.get(url)
+        # Give the page a moment to load any dynamic content
+        time.sleep(3)
+        return driver.page_source
+    except Exception as e:
+        st.error(f"An error occurred with Selenium: {e}")
         return None
-    proxy = random.choice(proxies_list)
-    return {"http": proxy, "https": proxy}
 
-def make_request(url, proxies_list, max_retries=3):
+def get_product_links(category_url, driver):
     """
-    Makes a request using a rotating proxy and handles retries.
-    If proxies_list is empty, it makes a direct request.
-    """
-    for attempt in range(max_retries):
-        try:
-            proxy_dict = get_proxy(proxies_list)
-            response = requests.get(url, headers=HEADERS, proxies=proxy_dict, timeout=20)
-            if response.status_code == 200:
-                return response
-            elif response.status_code == 403:
-                st.warning(f"Got 403 Forbidden. Retrying with a new IP... (Attempt {attempt + 1}/{max_retries})")
-                time.sleep(2) # Wait before retrying
-            else:
-                st.warning(f"Request failed with status {response.status_code}. Retrying...")
-        except requests.exceptions.ProxyError as e:
-            st.warning(f"Proxy error: {e}. Retrying... (Attempt {attempt + 1}/{max_retries})")
-        except requests.exceptions.RequestException as e:
-            st.error(f"A network error occurred: {e}")
-            break # Stop on other network errors
-        time.sleep(1)
-    return None
-
-
-def get_product_links(category_url, proxies_list):
-    """
-    Crawls through category pages to collect unique product URLs.
+    Crawls through category pages to collect unique product URLs using Selenium.
     """
     links = set()
     page = 1
@@ -72,12 +59,12 @@ def get_product_links(category_url, proxies_list):
         paginated_url = f"{category_url}?page={page}"
         progress_text.text(f"Scanning page: {paginated_url}")
 
-        r = make_request(paginated_url, proxies_list)
-        if not r:
-            st.error(f"Failed to fetch {paginated_url} after several retries.")
+        html_content = make_request_with_selenium(paginated_url, driver)
+        if not html_content:
+            st.error(f"Failed to fetch {paginated_url} using Selenium.")
             break
 
-        soup = BeautifulSoup(r.text, "lxml")
+        soup = BeautifulSoup(html_content, "lxml")
         product_cards = soup.select("article.prd > a.core")
 
         if not product_cards:
@@ -96,18 +83,18 @@ def get_product_links(category_url, proxies_list):
     st.write("✅ Link collection finished.")
     return list(links)
 
-def scrape_product(url, proxies_list):
+def scrape_product(url, driver):
     """
-    Scrapes a single product page for specific details.
+    Scrapes a single product page for specific details using Selenium.
     """
-    r = make_request(url, proxies_list)
-    if not r:
+    html_content = make_request_with_selenium(url, driver)
+    if not html_content:
         st.warning(f"Could not fetch {url}.")
         return {"Product Name": f"Error fetching page", "Price": "N/A", "Seller": "N/A", "SKU": "N/A", "Warranty Mentioned in Title": "N/A", "Warranty Details (Specs)": "N/A", "Warranty Address": "N/A", "Product URL": url}
 
     try:
-        soup = BeautifulSoup(r.text, "lxml")
-        # (The rest of the scraping logic remains the same)
+        soup = BeautifulSoup(html_content, "lxml")
+        # (The scraping logic remains the same as it operates on the HTML)
         # Product Name
         try:
             name = soup.select_one("h1.-fs24").get_text(strip=True)
@@ -165,37 +152,23 @@ def scrape_product(url, proxies_list):
 # --- Streamlit User Interface ---
 st.set_page_config(page_title="Jumia Warranty Scraper", layout="wide")
 st.title("Jumia Category Warranty Scraper 🛒")
-st.markdown("Enter a Jumia category URL to extract product details, focusing on warranty information.")
+st.markdown("Enter a Jumia category URL to extract product details. This version uses Selenium to avoid being blocked.")
 
 st.info("Example Category URL: `https://www.jumia.co.ke/television-sets/`")
 
 category_url = st.text_input("Enter Jumia category URL:", key="url_input")
 
-st.markdown("---")
-st.subheader("Proxy Configuration (Recommended)")
-st.markdown("To avoid being blocked, paste a list of proxies below (one per line). You can get these from a proxy service provider.")
-proxy_input = st.text_area(
-    "Enter proxies (one per line)",
-    placeholder="http://user:pass@host1:port\nhttp://user:pass@host2:port\nhttp://192.168.1.1:8080",
-    height=150
-)
-
-
 if st.button("🚀 Scrape Category", key="scrape_button") and category_url:
-    # Parse proxies from text area
-    proxies_list = [p.strip() for p in proxy_input.split('\n') if p.strip()]
-    if not proxies_list:
-        st.warning("No proxies provided. Trying a direct connection, but this may be blocked by Jumia.")
-
     parsed_url = urlparse(category_url)
     if not all([parsed_url.scheme, parsed_url.netloc, "jumia.co.ke" in parsed_url.netloc]):
         st.error("Please enter a valid Jumia Kenya URL (e.g., https://www.jumia.co.ke/...)")
     else:
-        with st.spinner("Collecting product links... This may take a few minutes."):
-            product_links = get_product_links(category_url, proxies_list)
+        driver = get_driver()
+        with st.spinner("Collecting product links using a headless browser... This may take a few minutes."):
+            product_links = get_product_links(category_url, driver)
 
         if not product_links:
-            st.warning("No product links were found. Please check the category URL and your proxy settings, then try again.")
+            st.warning("No product links were found. Please check the category URL and try again.")
         else:
             st.success(f"✅ Found {len(product_links)} unique products. Now scraping details...")
 
@@ -205,7 +178,7 @@ if st.button("🚀 Scrape Category", key="scrape_button") and category_url:
 
             for i, link in enumerate(product_links, start=1):
                 status_text.text(f"Scraping product {i}/{len(product_links)}: {link}")
-                details = scrape_product(link, proxies_list)
+                details = scrape_product(link, driver)
                 results.append(details)
                 progress_bar.progress(i / len(product_links))
                 time.sleep(0.5)
