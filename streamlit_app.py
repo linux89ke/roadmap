@@ -3,205 +3,312 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import re
+import json
 import time
-from urllib.parse import urljoin, urlparse
 import random
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.os_manager import ChromeType
+from urllib.parse import urljoin, urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --- Configuration ---
+# -----------------------------
+# Config
+# -----------------------------
 BASE_URL = "https://www.jumia.co.ke"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/115.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://www.google.com/",
+}
+REQUEST_TIMEOUT = 25
+MAX_PAGES = 200          # safety cap for pagination
+MAX_WORKERS = 12         # threads for product-page scraping
+DELAY_BETWEEN_PAGE_FETCH = (0.6, 1.2)  # jitter (min, max) seconds
+DELAY_BETWEEN_PRODUCT_FETCH = (0.0, 0.2)
 
-@st.cache_resource
-def get_driver():
-    """
-    Sets up and returns a Selenium WebDriver instance for Chrome.
-    Caches the driver to avoid re-initializing on every script rerun.
-    """
-    options = Options()
-    options.add_argument("--disable-gpu")
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    
-    # This will download the correct ChromeDriver version for the environment
-    service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
-    
-    driver = webdriver.Chrome(service=service, options=options)
-    return driver
+# -----------------------------
+# HTTP helper
+# -----------------------------
+def fetch(url):
+    resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    return resp
 
-def make_request_with_selenium(url, driver):
-    """
-    Makes a request using Selenium to handle dynamic JavaScript content.
-    """
-    try:
-        driver.get(url)
-        # Give the page a moment to load any dynamic content
-        time.sleep(3)
-        return driver.page_source
-    except Exception as e:
-        st.error(f"An error occurred with Selenium: {e}")
-        return None
-
-def get_product_links(category_url, driver):
-    """
-    Crawls through category pages to collect unique product URLs using Selenium.
-    """
+# -----------------------------
+# Product list extraction
+# -----------------------------
+def parse_links_from_grid(soup):
     links = set()
+    # Primary grid selector
+    for a in soup.select("article.prd > a.core"):
+        href = a.get("href")
+        if href:
+            links.add(urljoin(BASE_URL, href.split("#")[0]))
+    # Fallback: any <a.core> (older templates)
+    if not links:
+        for a in soup.select("a.core"):
+            href = a.get("href")
+            if href and href.startswith("/"):
+                links.add(urljoin(BASE_URL, href.split("#")[0]))
+    return links
+
+def parse_links_from_jsonld(soup):
+    links = set()
+    for s in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(s.string or "{}")
+        except Exception:
+            continue
+
+        # data can be dict or list, sometimes nested in @graph
+        candidates = []
+        if isinstance(data, dict):
+            candidates.append(data)
+            if "@graph" in data and isinstance(data["@graph"], list):
+                candidates += data["@graph"]
+        elif isinstance(data, list):
+            candidates += data
+
+        for obj in candidates:
+            # ItemList with itemListElement
+            if isinstance(obj, dict) and obj.get("@type") in ("ItemList", "BreadcrumbList"):
+                for item in obj.get("itemListElement", []):
+                    if isinstance(item, dict):
+                        # Sometimes item is nested under "item"
+                        u = item.get("url") or (item.get("item") or {}).get("url")
+                        if u and u.startswith("http"):
+                            links.add(u.split("#")[0])
+            # Product (rarely directly listed)
+            if isinstance(obj, dict) and obj.get("@type") == "Product":
+                u = obj.get("url")
+                if u and u.startswith("http"):
+                    links.add(u.split("#")[0])
+    return links
+
+def get_product_links(category_url, progress_placeholder):
+    all_links = set()
     page = 1
-    st.write("🔎 Starting product link collection...")
-    progress_text = st.empty()
+    while page <= MAX_PAGES:
+        # Build paginated URL
+        if "?page=" in category_url:
+            base = category_url.split("?page=")[0]
+            page_url = f"{base}?page={page}"
+        else:
+            sep = "&" if "?" in category_url else "?"
+            page_url = f"{category_url}{sep}page={page}"
 
-    while True:
-        paginated_url = f"{category_url}?page={page}"
-        progress_text.text(f"Scanning page: {paginated_url}")
+        progress_placeholder.text(f"Scanning page {page} …")
 
-        html_content = make_request_with_selenium(paginated_url, driver)
-        if not html_content:
-            st.error(f"Failed to fetch {paginated_url} using Selenium.")
+        try:
+            resp = fetch(page_url)
+        except Exception:
+            # Stop if page fetch fails (end or throttled)
             break
 
-        soup = BeautifulSoup(html_content, "lxml")
-        product_cards = soup.select("article.prd > a.core")
+        soup = BeautifulSoup(resp.text, "lxml")
 
-        if not product_cards:
-            st.write(f"No more products found on page {page}. Concluding link collection.")
+        # Try grid first
+        links_grid = parse_links_from_grid(soup)
+        # JSON-LD fallback
+        links_jsonld = parse_links_from_jsonld(soup)
+
+        found_now = links_grid | links_jsonld
+        if not found_now:
+            # No more products on further pages
             break
 
-        for card in product_cards:
-            href = card.get("href")
-            if href:
-                full_url = urljoin(BASE_URL, href.split("#")[0])
-                links.add(full_url)
-
+        all_links |= found_now
         page += 1
-        time.sleep(1)
+        time.sleep(random.uniform(*DELAY_BETWEEN_PAGE_FETCH))
 
-    st.write("✅ Link collection finished.")
-    return list(links)
+    return list(all_links)
 
-def scrape_product(url, driver):
-    """
-    Scrapes a single product page for specific details using Selenium.
-    """
-    html_content = make_request_with_selenium(url, driver)
-    if not html_content:
-        st.warning(f"Could not fetch {url}.")
-        return {"Product Name": f"Error fetching page", "Price": "N/A", "Seller": "N/A", "SKU": "N/A", "Warranty Mentioned in Title": "N/A", "Warranty Details (Specs)": "N/A", "Warranty Address": "N/A", "Product URL": url}
+# -----------------------------
+# Product page parsing
+# -----------------------------
+def text_or_default(node, default="Not indicated"):
+    if not node:
+        return default
+    t = node.get_text(strip=True) if hasattr(node, "get_text") else str(node).strip()
+    return t if t else default
+
+def scrape_product(product_url):
+    # brief polite jitter
+    time.sleep(random.uniform(*DELAY_BETWEEN_PRODUCT_FETCH))
 
     try:
-        soup = BeautifulSoup(html_content, "lxml")
-        # (The scraping logic remains the same as it operates on the HTML)
-        # Product Name
-        try:
-            name = soup.select_one("h1.-fs24").get_text(strip=True)
-        except AttributeError:
-            name = "Not indicated"
-
-        # Price
-        try:
-            price = soup.select_one("span.-b").get_text(strip=True)
-        except AttributeError:
-            price = "Not indicated"
-
-        # Seller
-        try:
-            seller = soup.select_one("div.-df.-j-bet > p.-m").get_text(strip=True)
-        except AttributeError:
-            seller = "Not indicated"
-
-        # SKU
-        try:
-            sku_element = soup.find(string=re.compile(r"SKU", re.I))
-            sku = sku_element.find_next().get_text(strip=True) if sku_element else "Not indicated"
-        except (AttributeError, TypeError):
-            sku = "Not indicated"
-
-        # Warranty in Title
-        warranty_title = "No"
-        if re.search(r"(\b\d+\s?(yr|yrs|year|years)\b|\bwarranty\b)", name, re.I):
-            warranty_title = "Yes"
-
-        # Warranty in Specifications
-        warranty_specs = "Not indicated"
-        warranty_address = "Not indicated"
-        try:
-            spec_rows = soup.select("div.-pvs > ul > li")
-            for row in spec_rows:
-                row_text = row.get_text(strip=True).lower()
-                if "product warranty" in row_text:
-                    warranty_specs = row_text.split(":", 1)[-1].strip()
-                if "warranty address" in row_text:
-                    warranty_address = row_text.split(":", 1)[-1].strip()
-        except AttributeError:
-            pass
-
-        return {
-            "Product Name": name, "Price": price, "Seller": seller, "SKU": sku,
-            "Warranty Mentioned in Title": warranty_title, "Warranty Details (Specs)": warranty_specs,
-            "Warranty Address": warranty_address, "Product URL": url
-        }
+        resp = fetch(product_url)
     except Exception as e:
-        st.warning(f"An unexpected error occurred while parsing {url}. Reason: {e}")
-        return {"Product Name": f"Error parsing page", "Price": "N/A", "Seller": "N/A", "SKU": "N/A", "Warranty Mentioned in Title": "N/A", "Warranty Details (Specs)": "N/A", "Warranty Address": "N/A", "Product URL": url}
+        return {
+            "Product Name": f"Error fetching: {e}",
+            "SKU": "Not indicated",
+            "Seller": "Not indicated",
+            "Price": "Not indicated",
+            "Warranty in Title": "Not indicated",
+            "Warranty (Specs)": "Not indicated",
+            "Warranty Address": "Not indicated",
+            "Product URL": product_url,
+        }
 
+    soup = BeautifulSoup(resp.text, "lxml")
 
-# --- Streamlit User Interface ---
-st.set_page_config(page_title="Jumia Warranty Scraper", layout="wide")
-st.title("Jumia Category Warranty Scraper 🛒")
-st.markdown("Enter a Jumia category URL to extract product details. This version uses Selenium to avoid being blocked.")
+    # Title / Name
+    name = text_or_default(soup.select_one("h1"))
+    # Price (common Jumia selector)
+    price = text_or_default(soup.select_one("span.-b"))
 
-st.info("Example Category URL: `https://www.jumia.co.ke/television-sets/`")
-
-category_url = st.text_input("Enter Jumia category URL:", key="url_input")
-
-if st.button("🚀 Scrape Category", key="scrape_button") and category_url:
-    parsed_url = urlparse(category_url)
-    if not all([parsed_url.scheme, parsed_url.netloc, "jumia.co.ke" in parsed_url.netloc]):
-        st.error("Please enter a valid Jumia Kenya URL (e.g., https://www.jumia.co.ke/...)")
+    # Seller (several template variants)
+    seller = "Not indicated"
+    cand = soup.find("a", {"data-testid": "seller-name"})
+    if cand:
+        seller = text_or_default(cand)
     else:
-        driver = get_driver()
-        with st.spinner("Collecting product links using a headless browser... This may take a few minutes."):
-            product_links = get_product_links(category_url, driver)
+        # Sometimes in a small paragraph near "Sold by"
+        sold_by = soup.find(string=re.compile(r"Sold by", re.I))
+        if sold_by and sold_by.parent:
+            a = sold_by.parent.find_next("a")
+            if a:
+                seller = text_or_default(a)
+        if seller == "Not indicated":
+            # Older template
+            p = soup.select_one("div.-df.-j-bet > p.-m")
+            if p:
+                seller = text_or_default(p)
 
-        if not product_links:
-            st.warning("No product links were found. Please check the category URL and try again.")
-        else:
-            st.success(f"✅ Found {len(product_links)} unique products. Now scraping details...")
+    # SKU: various layouts (table, list)
+    sku = "Not indicated"
+    # table rows
+    for tr in soup.select("tr"):
+        th = tr.find("th")
+        td = tr.find("td")
+        if th and re.search(r"\bSKU\b", th.get_text(strip=True), re.I):
+            sku = text_or_default(td)
+            break
+    if sku == "Not indicated":
+        # list items
+        for li in soup.select("li"):
+            txt = li.get_text(" ", strip=True)
+            if re.search(r"\bSKU\b", txt, re.I):
+                parts = re.split(r":", txt, maxsplit=1)
+                if len(parts) == 2:
+                    sku = parts[1].strip() or "Not indicated"
+                    break
 
-            results = []
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+    # Warranty in title
+    warranty_in_title = "Not indicated"
+    if re.search(r"(warranty|\b\d+\s?(yr|yrs|year|years)\b)", name, re.I):
+        warranty_in_title = name
 
-            for i, link in enumerate(product_links, start=1):
-                status_text.text(f"Scraping product {i}/{len(product_links)}: {link}")
-                details = scrape_product(link, driver)
-                results.append(details)
-                progress_bar.progress(i / len(product_links))
-                time.sleep(0.5)
+    # Warranty (Specs) + Warranty Address (check table rows and bullet lists)
+    warranty_specs = "Not indicated"
+    warranty_address = "Not indicated"
 
-            status_text.text("Scraping complete!")
-            st.balloons()
+    # Tables first
+    for tr in soup.select("tr"):
+        th = tr.find("th")
+        td = tr.find("td")
+        if th:
+            key = th.get_text(strip=True).lower()
+            val = text_or_default(td)
+            if "warranty address" in key and warranty_address == "Not indicated":
+                warranty_address = val
+            if ("warranty" in key) and ("address" not in key) and (warranty_specs == "Not indicated"):
+                warranty_specs = val
 
-            df = pd.DataFrame(results)
-            st.dataframe(df)
+    # Bullet lists (e.g., under “Specifications”)
+    for li in soup.select("div.-pvs ul li"):
+        raw = li.get_text(" ", strip=True)
+        key_val = raw.split(":", 1)
+        if len(key_val) == 2:
+            key = key_val[0].strip().lower()
+            val = key_val[1].strip() or "Not indicated"
+            if "warranty address" in key and warranty_address == "Not indicated":
+                warranty_address = val
+            if ("warranty" in key) and ("address" not in key) and (warranty_specs == "Not indicated"):
+                warranty_specs = val
 
-            @st.cache_data
-            def convert_df_to_excel(dataframe):
-                from io import BytesIO
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    dataframe.to_excel(writer, index=False, sheet_name='Jumia_Products')
-                return output.getvalue()
+    return {
+        "Product Name": name,
+        "SKU": sku,
+        "Seller": seller,
+        "Price": price,
+        "Warranty in Title": warranty_in_title,
+        "Warranty (Specs)": warranty_specs,
+        "Warranty Address": warranty_address,
+        "Product URL": product_url,
+    }
 
-            excel_data = convert_df_to_excel(df)
+# -----------------------------
+# Streamlit UI
+# -----------------------------
+st.set_page_config(page_title="Jumia Warranty Scraper", layout="wide")
+st.title("Jumia Category Warranty Scraper 🔎")
+st.caption("Paste **any Jumia Kenya category URL**. The app will collect products, then scrape each product page for warranty details, SKU, seller, and price.")
 
-            st.download_button(
-                label="📥 Download Results as Excel",
-                data=excel_data,
-                file_name="jumia_warranty_products.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+st.info("Example category: https://www.jumia.co.ke/television-sets/")
+
+category_url = st.text_input("Enter Jumia category URL:")
+start = st.button("Scrape Category")
+
+if start:
+    # Basic validation
+    try:
+        parsed = urlparse(category_url)
+        if not (parsed.scheme and parsed.netloc and "jumia.co.ke" in parsed.netloc):
+            st.error("Please enter a valid Jumia Kenya URL (e.g., https://www.jumia.co.ke/television-sets/)")
+            st.stop()
+    except Exception:
+        st.error("Please enter a valid URL.")
+        st.stop()
+
+    st.subheader("Step 1: Collecting product links")
+    page_status = st.empty()
+    links = get_product_links(category_url, page_status)
+    st.success(f"Found {len(links)} unique product URLs.")
+    if not links:
+        st.stop()
+
+    st.subheader("Step 2: Scraping product pages")
+    prog = st.progress(0.0)
+    status = st.empty()
+    results = []
+
+    # Multithreaded scraping
+    total = len(links)
+    completed = 0
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = {ex.submit(scrape_product, url): url for url in links}
+        for fut in as_completed(futures):
+            data = fut.result()
+            results.append(data)
+            completed += 1
+            prog.progress(completed / total)
+            status.text(f"Processed {completed} of {total}")
+
+    st.success("Scraping complete!")
+    df = pd.DataFrame(results)
+
+    # Ensure warranty columns say "Not indicated" if empty
+    for col in ["Warranty in Title", "Warranty (Specs)", "Warranty Address"]:
+        df[col] = df[col].apply(lambda x: x if (isinstance(x, str) and x.strip()) else "Not indicated")
+
+    st.dataframe(df, use_container_width=True)
+
+    # Download to Excel
+    @st.cache_data
+    def to_excel_bytes(frame: pd.DataFrame) -> bytes:
+        from io import BytesIO
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+            frame.to_excel(writer, index=False, sheet_name="Jumia_Products")
+        return buf.getvalue()
+
+    st.download_button(
+        "📥 Download Excel",
+        data=to_excel_bytes(df),
+        file_name="jumia_warranty_products.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
