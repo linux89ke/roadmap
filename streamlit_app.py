@@ -8,8 +8,7 @@ from io import BytesIO
 import re
 from urllib.parse import urljoin
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="Jumia Category Warranty Scraper", layout="wide")
+st.set_page_config(page_title="Jumia Kenya Warranty Scraper", layout="wide")
 st.title("Jumia Kenya Category Warranty Scraper 🛒")
 st.caption("Enter a Jumia Kenya category URL to extract product details including warranty.")
 
@@ -21,10 +20,7 @@ scraper = cloudscraper.create_scraper(
                         'Chrome/115.0.0.0 Safari/537.36'}
 )
 
-# --- Helper Functions ---
-
 def get_product_links(category_url):
-    """Collect all product links from category pages"""
     links = []
     page = 1
     while True:
@@ -47,13 +43,11 @@ def get_product_links(category_url):
     return links
 
 def parse_product(url):
-    """Extract product info including warranty from LD-JSON and page content"""
     try:
         r = scraper.get(url)
         if r.status_code != 200:
             return None
         soup = BeautifulSoup(r.text, "html.parser")
-        # LD-JSON parsing
         script = soup.find("script", {"type": "application/ld+json"})
         data = json.loads(script.string) if script else {}
         product = data.get("mainEntity", {})
@@ -61,12 +55,10 @@ def parse_product(url):
         sku = product.get("sku", "Not indicated")
         price = product.get("offers", {}).get("price", "Not indicated")
         seller = product.get("offers", {}).get("seller", {}).get("name", "Not indicated")
-        # Warranty in title
         warranty_title = "Yes" if re.search(r"(warranty|\b\d+\s?(yr|yrs|year|years)\b)", name, re.I) else "Not indicated"
-        # Warranty in specs & address
         warranty_specs = "Not indicated"
         warranty_address = "Not indicated"
-        # Bullet lists / tables
+
         for li in soup.select("div.-pvs ul li"):
             raw = li.get_text(" ", strip=True)
             parts = raw.split(":", 1)
@@ -77,6 +69,7 @@ def parse_product(url):
                     warranty_address = val
                 elif "warranty" in key and "address" not in key:
                     warranty_specs = val
+
         for tr in soup.select("tr"):
             th = tr.find("th")
             td = tr.find("td")
@@ -87,6 +80,7 @@ def parse_product(url):
                     warranty_address = val
                 elif "warranty" in key and "address" not in key:
                     warranty_specs = val
+
         return {
             "Product Title": name,
             "SKU": sku,
@@ -109,7 +103,6 @@ def parse_product(url):
             "Product URL": url
         }
 
-# --- Main Scraping ---
 if start and category_url:
     st.info("Collecting product links...")
     links = get_product_links(category_url)
@@ -119,17 +112,22 @@ if start and category_url:
     st.success(f"Found {len(links)} products. Scraping details now...")
 
     results = []
-    prog_bar = st.progress(0)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
     for idx, link in enumerate(links, start=1):
+        status_text.text(f"Scraping product {idx}/{len(links)}: {link}")
         result = parse_product(link)
         results.append(result)
-        prog_bar.progress(idx / len(links))
+        progress_bar.progress(idx / len(links))
         time.sleep(0.2)
+
+    status_text.text("Scraping complete!")
+    st.balloons()
 
     df = pd.DataFrame(results)
     st.dataframe(df, use_container_width=True)
 
-    # Download buttons
     @st.cache_data
     def to_excel_bytes(frame: pd.DataFrame) -> bytes:
         output = BytesIO()
@@ -143,4 +141,3 @@ if start and category_url:
         file_name="jumia_warranty_products.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
