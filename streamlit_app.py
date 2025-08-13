@@ -3,110 +3,113 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import re
-from urllib.parse import urlparse
 import time
 
-# Helper: Get JSON API URL for a category
-def get_category_api_url(category_url, page):
-    parsed = urlparse(category_url)
-    path_parts = parsed.path.strip("/").split("/")
-    category_slug = path_parts[-1] if path_parts[-1] else path_parts[-2]
-    return f"https://www.jumia.co.ke/catalog/?q=&page={page}&slug={category_slug}"
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+}
 
-# Helper: Get warranty details from product page
-def get_product_details(product_url):
+def get_product_links(category_url):
+    links = []
+    page = 1
+    while True:
+        url = f"{category_url}?page={page}"
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            break
+        soup = BeautifulSoup(r.text, "lxml")
+        product_cards = soup.select("a.core")
+        if not product_cards:
+            break
+        for a in product_cards:
+            href = a.get("href")
+            if href and href.startswith("/"):
+                links.append("https://www.jumia.co.ke" + href.split("#")[0])
+        page += 1
+        time.sleep(1)
+    return list(dict.fromkeys(links))
+
+def scrape_product(url):
     try:
-        r = requests.get(product_url, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
+        r = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, "lxml")
 
-        # Extract SKU
-        sku_elem = soup.find("span", text=re.compile(r"SKU", re.I))
-        sku = sku_elem.find_next("span").text.strip() if sku_elem else "Not indicated"
+        name = soup.select_one("h1").get_text(strip=True) if soup.select_one("h1") else "Not indicated"
 
-        # Extract Seller
-        seller_elem = soup.find("a", {"class": re.compile("-mhs")})
-        seller = seller_elem.text.strip() if seller_elem else "Not indicated"
+        # SKU
+        sku = "Not indicated"
+        sku_tag = soup.find(string=re.compile("SKU", re.I))
+        if sku_tag:
+            td = sku_tag.find_next("td")
+            if td:
+                sku = td.get_text(strip=True)
+
+        # Seller
+        seller = "Not indicated"
+        seller_tag = soup.find("a", {"data-testid": "seller-name"})
+        if seller_tag:
+            seller = seller_tag.get_text(strip=True)
+
+        # Price
+        price = "Not indicated"
+        price_tag = soup.select_one("span.-b")
+        if price_tag:
+            price = price_tag.get_text(strip=True)
 
         # Warranty in title
-        title_elem = soup.find("h1")
-        warranty_in_title = "Not indicated"
-        if title_elem and re.search(r"warranty", title_elem.text, re.I):
-            warranty_in_title = title_elem.text.strip()
+        warranty_title = "Not indicated"
+        if re.search(r"\b\d+\s?yr|\bwarranty", name, re.I):
+            warranty_title = name
 
         # Warranty in specs
-        specs_warranty = "Not indicated"
-        specs_section = soup.find_all("tr")
-        for tr in specs_section:
+        warranty_specs = "Not indicated"
+        warranty_address = "Not indicated"
+        for tr in soup.select("tr"):
             th = tr.find("th")
             td = tr.find("td")
-            if th and "warranty" in th.text.lower():
-                specs_warranty = td.text.strip() if td else "Not indicated"
-                break
+            if th and "warranty" in th.get_text(strip=True).lower():
+                warranty_specs = td.get_text(strip=True) if td else "Not indicated"
+            if th and "warranty address" in th.get_text(strip=True).lower():
+                warranty_address = td.get_text(strip=True) if td else "Not indicated"
 
-        # Warranty address (in delivery/returns section)
-        warranty_address = "Not indicated"
-        delivery_section = soup.find("div", text=re.compile("Warranty Address", re.I))
-        if delivery_section:
-            warranty_address = delivery_section.find_next("div").text.strip()
-
-        return sku, seller, warranty_in_title, specs_warranty, warranty_address
-    except Exception:
-        return "Not indicated", "Not indicated", "Not indicated", "Not indicated", "Not indicated"
+        return {
+            "Product Name": name,
+            "SKU": sku,
+            "Seller": seller,
+            "Price": price,
+            "Warranty in Title": warranty_title,
+            "Warranty (Specs)": warranty_specs,
+            "Warranty Address": warranty_address,
+            "Product URL": url
+        }
+    except Exception as e:
+        return {"Product Name": f"Error: {e}", "SKU": "Error", "Seller": "Error",
+                "Price": "Error", "Warranty in Title": "Error",
+                "Warranty (Specs)": "Error", "Warranty Address": "Error", "Product URL": url}
 
 # Streamlit UI
 st.title("Jumia Category Warranty Scraper")
 
-category_url = st.text_input("Enter Jumia category URL:", "")
+category_url = st.text_input("Enter Jumia category URL:")
 
-if st.button("Fetch Data") and category_url:
-    st.write("Fetching product list...")
+if st.button("Scrape Category") and category_url:
+    st.write("Collecting product links...")
+    product_links = get_product_links(category_url)
+    st.success(f"Found {len(product_links)} products.")
 
-    all_products = []
-    page = 1
-    total_found = 0
+    results = []
+    progress = st.progress(0)
+    for i, link in enumerate(product_links, start=1):
+        details = scrape_product(link)
+        results.append(details)
+        progress.progress(i / len(product_links))
+        time.sleep(1)  # avoid hammering
 
-    progress_bar = st.progress(0)
-    while True:
-        api_url = get_category_api_url(category_url, page)
-        r = requests.get(api_url, timeout=10)
-        data = r.json()
+    df = pd.DataFrame(results)
+    st.dataframe(df)
 
-        products = data.get("products", [])
-        if not products:
-            break
-
-        for prod in products:
-            total_found += 1
-            product_name = prod.get("name", "No name")
-            product_url = "https://www.jumia.co.ke" + prod.get("url", "")
-            price = prod.get("price", "N/A")
-
-            sku, seller, warranty_title, warranty_specs, warranty_address = get_product_details(product_url)
-
-            all_products.append({
-                "SKU": sku,
-                "Product Name": product_name,
-                "Product URL": product_url,
-                "Seller": seller,
-                "Price": price,
-                "Warranty in Title": warranty_title,
-                "Warranty (Specs)": warranty_specs,
-                "Warranty Address": warranty_address
-            })
-
-            progress_bar.progress(min(total_found / 100, 1.0))  # Rough progress
-
-        page += 1
-        time.sleep(1)
-
-    if all_products:
-        df = pd.DataFrame(all_products)
-        st.dataframe(df)
-
-        # Excel download
-        excel_file = "jumia_warranty.xlsx"
-        df.to_excel(excel_file, index=False)
-        with open(excel_file, "rb") as f:
-            st.download_button("Download Excel", f, file_name=excel_file)
-    else:
-        st.warning("No products found.")
+    # Excel export
+    out_file = "jumia_products.xlsx"
+    df.to_excel(out_file, index=False)
+    with open(out_file, "rb") as f:
+        st.download_button("Download Excel", f, file_name=out_file)
