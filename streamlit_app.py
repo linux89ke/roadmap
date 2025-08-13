@@ -27,39 +27,31 @@ HEADERS = {
 }
 BASE_URL = "https://www.jumia.co.ke"
 
-# --- PROXY CONFIGURATION ---
-# Replace these with your actual list of proxies from a provider.
-# Format: "http://user:pass@host:port" or "http://host:port"
-PROXIES = [
-    # Example proxies (these will not work, replace them)
-    "http://127.0.0.1:8080",
-    "http://127.0.0.1:8081",
-]
-
-def get_proxies():
+def get_proxy(proxies_list):
     """Returns a dictionary for the requests library with a randomly chosen proxy."""
-    if not PROXIES:
+    if not proxies_list:
         return None
-    proxy = random.choice(PROXIES)
+    proxy = random.choice(proxies_list)
     return {"http": proxy, "https": proxy}
 
-def make_request(url, max_retries=3):
+def make_request(url, proxies_list, max_retries=3):
     """
     Makes a request using a rotating proxy and handles retries.
+    If proxies_list is empty, it makes a direct request.
     """
     for attempt in range(max_retries):
         try:
-            proxy_dict = get_proxies()
+            proxy_dict = get_proxy(proxies_list)
             response = requests.get(url, headers=HEADERS, proxies=proxy_dict, timeout=20)
             if response.status_code == 200:
                 return response
             elif response.status_code == 403:
-                st.warning(f"Got 403 Forbidden. Retrying with a new proxy... (Attempt {attempt + 1}/{max_retries})")
+                st.warning(f"Got 403 Forbidden. Retrying with a new IP... (Attempt {attempt + 1}/{max_retries})")
                 time.sleep(2) # Wait before retrying
             else:
                 st.warning(f"Request failed with status {response.status_code}. Retrying...")
         except requests.exceptions.ProxyError as e:
-            st.warning(f"Proxy error: {e}. Retrying with a new proxy... (Attempt {attempt + 1}/{max_retries})")
+            st.warning(f"Proxy error: {e}. Retrying... (Attempt {attempt + 1}/{max_retries})")
         except requests.exceptions.RequestException as e:
             st.error(f"A network error occurred: {e}")
             break # Stop on other network errors
@@ -67,7 +59,7 @@ def make_request(url, max_retries=3):
     return None
 
 
-def get_product_links(category_url):
+def get_product_links(category_url, proxies_list):
     """
     Crawls through category pages to collect unique product URLs.
     """
@@ -80,7 +72,7 @@ def get_product_links(category_url):
         paginated_url = f"{category_url}?page={page}"
         progress_text.text(f"Scanning page: {paginated_url}")
 
-        r = make_request(paginated_url)
+        r = make_request(paginated_url, proxies_list)
         if not r:
             st.error(f"Failed to fetch {paginated_url} after several retries.")
             break
@@ -104,11 +96,11 @@ def get_product_links(category_url):
     st.write("✅ Link collection finished.")
     return list(links)
 
-def scrape_product(url):
+def scrape_product(url, proxies_list):
     """
     Scrapes a single product page for specific details.
     """
-    r = make_request(url)
+    r = make_request(url, proxies_list)
     if not r:
         st.warning(f"Could not fetch {url}.")
         return {"Product Name": f"Error fetching page", "Price": "N/A", "Seller": "N/A", "SKU": "N/A", "Warranty Mentioned in Title": "N/A", "Warranty Details (Specs)": "N/A", "Warranty Address": "N/A", "Product URL": url}
@@ -179,16 +171,31 @@ st.info("Example Category URL: `https://www.jumia.co.ke/television-sets/`")
 
 category_url = st.text_input("Enter Jumia category URL:", key="url_input")
 
+st.markdown("---")
+st.subheader("Proxy Configuration (Recommended)")
+st.markdown("To avoid being blocked, paste a list of proxies below (one per line). You can get these from a proxy service provider.")
+proxy_input = st.text_area(
+    "Enter proxies (one per line)",
+    placeholder="http://user:pass@host1:port\nhttp://user:pass@host2:port\nhttp://192.168.1.1:8080",
+    height=150
+)
+
+
 if st.button("🚀 Scrape Category", key="scrape_button") and category_url:
+    # Parse proxies from text area
+    proxies_list = [p.strip() for p in proxy_input.split('\n') if p.strip()]
+    if not proxies_list:
+        st.warning("No proxies provided. Trying a direct connection, but this may be blocked by Jumia.")
+
     parsed_url = urlparse(category_url)
     if not all([parsed_url.scheme, parsed_url.netloc, "jumia.co.ke" in parsed_url.netloc]):
         st.error("Please enter a valid Jumia Kenya URL (e.g., https://www.jumia.co.ke/...)")
     else:
         with st.spinner("Collecting product links... This may take a few minutes."):
-            product_links = get_product_links(category_url)
+            product_links = get_product_links(category_url, proxies_list)
 
         if not product_links:
-            st.warning("No product links were found. Please check the category URL and try again.")
+            st.warning("No product links were found. Please check the category URL and your proxy settings, then try again.")
         else:
             st.success(f"✅ Found {len(product_links)} unique products. Now scraping details...")
 
@@ -198,7 +205,7 @@ if st.button("🚀 Scrape Category", key="scrape_button") and category_url:
 
             for i, link in enumerate(product_links, start=1):
                 status_text.text(f"Scraping product {i}/{len(product_links)}: {link}")
-                details = scrape_product(link)
+                details = scrape_product(link, proxies_list)
                 results.append(details)
                 progress_bar.progress(i / len(product_links))
                 time.sleep(0.5)
