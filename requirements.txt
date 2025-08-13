@@ -1,2 +1,6 @@
 streamlit-nightly
 notion-client==1.0.0
+beautifulsoup4
+requests
+pandas
+openpyxl
