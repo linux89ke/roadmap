@@ -18,7 +18,7 @@ MAX_PAGES = 200
 MAX_WORKERS = 8
 PAGE_SLEEP = (0.4, 0.9)
 REQ_RETRIES = 3
-REQ_TIMEOUT = 35
+REQ_TIMEOUT = 45 # Increased timeout for network requests
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -49,8 +49,8 @@ def fetch_with_js(url, retries=2):
     for _ in range(retries):
         try:
             r = html_session.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
-            # Increased timeout for complex pages
-            r.html.render(timeout=60, sleep=3, keep_page=True)
+            # Increased timeout for complex pages, crucial for reliability
+            r.html.render(timeout=60, sleep=4, keep_page=True)
             r.close() # Important to close the browser tab to conserve memory
             return r
         except Exception:
@@ -134,6 +134,9 @@ def text_or_na(node, default="Not indicated"):
 def extract_basic_fields(soup: BeautifulSoup):
     name, price, sku, seller = "Not indicated", "Not indicated", "Not indicated", "Not indicated"
 
+    # Confine search to the main content area to avoid grabbing data from irrelevant sections
+    main_content = soup.find("main", {"role": "main"}) or soup
+
     # --- Strategy 1: JSON-LD (Most reliable) ---
     products = find_product_objs_from_ldjson(soup)
     if products:
@@ -145,18 +148,18 @@ def extract_basic_fields(soup: BeautifulSoup):
             price = offers.get("price") or offers.get("priceSpecification", {}).get("price") or price
             if isinstance(offers.get("seller"), dict): seller = offers["seller"].get("name") or seller
 
-    # --- Strategy 2: Visible HTML Elements ---
-    if name == "Not indicated": name = text_or_na(soup.select_one("h1"))
-    if price == "Not indicated": price = text_or_na(soup.select_one("span.-b"))
+    # --- Strategy 2: Visible HTML Elements within the main content ---
+    if name == "Not indicated": name = text_or_na(main_content.select_one("h1"))
+    if price == "Not indicated": price = text_or_na(main_content.select_one("span.-b"))
     if sku == "Not indicated":
-        for li in soup.select("li"):
+        for li in main_content.select("li"):
             txt = li.get_text(" ", strip=True)
             if re.search(r"\bSKU\b\s*:", txt, re.I):
                 sku = txt.split(":", 1)[-1].strip() or "Not indicated"; break
 
     # --- Strategy 3: Precise Seller Information Box ---
     if seller == "Not indicated":
-        seller_header = soup.find(lambda t: t.name in ['h2', 'h3'] and 'seller information' in t.text.lower())
+        seller_header = main_content.find(lambda t: t.name in ['h2', 'h3'] and 'seller information' in t.text.lower())
         if seller_header:
             content_area = seller_header.find_next_sibling()
             if content_area:
@@ -167,41 +170,42 @@ def extract_basic_fields(soup: BeautifulSoup):
     
     # --- Strategy 4: Jumia Express Badge ---
     if seller == "Not indicated":
-        if soup.select_one('img[alt*="Jumia Express"]'): seller = "Jumia"
+        if main_content.select_one('img[alt*="Jumia Express"]'): seller = "Jumia"
         
     return name, price, sku, seller
 
 def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
     warranty_title, warranty_specs, warranty_address = "Not indicated", "Not indicated", "Not indicated"
+    
+    # Confine search to the main content area
+    main_content = soup.find("main", {"role": "main"}) or soup
 
     # --- Strategy 1: Check product title ---
     if re.search(r"(warranty|\b\d+\s?(yr|yrs|year|years)\b)", title_text or "", re.I):
         warranty_title = title_text
 
-    # --- Strategy 2: Look for the structured sidebar section (Most reliable) ---
-    warranty_heading = soup.find(lambda t: t.name in ['p', 'div', 'span'] and t.get_text(strip=True).lower() == 'warranty')
+    # --- Strategy 2: Look for the structured sidebar section ---
+    warranty_heading = main_content.find(lambda t: t.name in ['p', 'div', 'span'] and t.get_text(strip=True).lower() == 'warranty')
     if warranty_heading:
         detail_node = warranty_heading.find_next_sibling()
         if detail_node: warranty_specs = text_or_na(detail_node)
 
     # --- Strategy 3: Look in the main specifications table ---
-    # This check will only apply if the more reliable sidebar check fails
     if warranty_specs == "Not indicated":
-        for tr in soup.select("div.-pdp-add-info tr"):
+        for tr in main_content.select("div.-pdp-add-info tr"):
             cells = tr.find_all("td")
             if len(cells) == 2:
                 key = cells[0].get_text(strip=True).lower()
                 val = cells[1].get_text(strip=True)
-                if "warranty" in key and "address" not in key: warranty_specs = val; break # Stop after first match
+                if "warranty" in key and "address" not in key: warranty_specs = val; break
 
     # --- Strategy 4: Look for promotional badges ---
     if warranty_specs == "Not indicated":
-        promo = soup.find(lambda t: t.name in ['p', 'span', 'div'] and re.search(r'\b\d+\s?(year|yr|month)s?\s+warranty\b', t.text, re.I))
+        promo = main_content.find(lambda t: t.name in ['p', 'span', 'div'] and re.search(r'\b\d+\s?(year|yr|month)s?\s+warranty\b', t.text, re.I))
         if promo: warranty_specs = text_or_na(promo)
 
     # --- Strategy 5: Find Warranty Address Separately ---
-    # This can be found even if the main warranty spec is elsewhere
-    for tr in soup.select("div.-pdp-add-info tr, table tr"):
+    for tr in main_content.select("div.-pdp-add-info tr, table tr"):
         key_cell = tr.find(['th', 'td'])
         if key_cell:
             key_text = key_cell.get_text(strip=True).lower()
@@ -214,7 +218,6 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
 def parse_product(url: str):
     # --- "JavaScript First" Strategy ---
     r = fetch_with_js(url)
-    # Fallback to simple fetch only if JS rendering fails completely
     if not r or not hasattr(r, 'html') or not r.html.html:
         r = fetch_with_retry(url)
         if not r:
