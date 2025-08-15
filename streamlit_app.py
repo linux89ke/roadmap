@@ -184,23 +184,23 @@ def extract_basic_fields(soup: BeautifulSoup):
         if a:
             seller = text_or_na(a)
             
-    # Final, most robust fallback for Seller
+    # DEFINITIVE FIX FOR SELLER LOGIC
+    # This version correctly targets the sibling element of the header.
     if seller == "Not indicated" or seller.lower() == 'follow':
         seller_header = soup.find(
             lambda tag: tag.name in ['h2', 'h3'] and 'seller information' in tag.get_text(strip=True).lower()
         )
         if seller_header:
-            # Find the parent container that holds the seller info
-            parent_box = seller_header.find_parent()
-            if parent_box:
-                # Find all links within that box
-                all_links = parent_box.find_all("a")
-                for link in all_links:
-                    link_text = text_or_na(link, default="")
-                    # The correct seller name won't be "Follow" and will be a meaningful name
-                    if "follow" not in link_text.lower() and len(link_text) > 2:
+            # The actual seller info is in the container immediately FOLLOWING the header.
+            content_area = seller_header.find_next_sibling()
+            if content_area:
+                # Find the first link within that specific content area.
+                seller_link = content_area.find("a")
+                if seller_link:
+                    # Final check to ensure we didn't accidentally grab a 'follow' link anyway.
+                    link_text = text_or_na(seller_link, default="")
+                    if "follow" not in link_text.lower():
                         seller = link_text
-                        break # Found the correct link, stop searching
 
     return name, price, sku, seller
 
@@ -289,11 +289,11 @@ def parse_product(url: str):
 # -----------------------------
 # Streamlit UI
 # -----------------------------
-st.set_page_config(page_title="Category", layout="wide")
-st.title("Category Scraper 🔎")
-st.caption("Paste a category URL. The app collects all product links, then scrapes warranty, seller, SKU, price.")
+st.set_page_config(page_title="Jumia KE Warranty Scraper", layout="wide")
+st.title("Jumia Kenya Category Warranty Scraper 🔎")
+st.caption("Paste a Jumia Kenya category URL. The app collects all product links, then scrapes warranty, seller, SKU, price.")
 
-category_url = st.text_input("Enter category URL (e.g., https://www.jumia.co.ke/television-sets/)")
+category_url = st.text_input("Enter Jumia category URL (e.g., https://www.jumia.co.ke/television-sets/)")
 go = st.button("Scrape Category")
 
 if go and category_url:
