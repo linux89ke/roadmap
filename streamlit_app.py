@@ -1,145 +1,119 @@
+import streamlit as st
 import pandas as pd
 import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 from requests_html import HTMLSession
 import json
-import re
-import streamlit as st
-from time import sleep
-from random import uniform
+import time
 
-# ----------------------------------
-# Utility functions
-# ----------------------------------
-def get_jsonld_data(soup):
-    """Extract JSON-LD data from page soup."""
-    scripts = soup.find_all("script", type="application/ld+json")
-    for script in scripts:
+# --- Helper: Static HTML scrape ---
+def scrape_static(url):
+    scraper = cloudscraper.create_scraper()
+    r = scraper.get(url, timeout=15)
+    soup = BeautifulSoup(r.text, 'lxml')
+
+    seller = None
+    warranty = None
+
+    # Try JSON-LD
+    for script in soup.find_all("script", type="application/ld+json"):
         try:
-            data = json.loads(script.string)
+            data = json.loads(script.string.strip())
             if isinstance(data, dict):
-                yield data
-            elif isinstance(data, list):
-                for item in data:
-                    if isinstance(item, dict):
-                        yield item
-        except Exception:
-            continue
+                if "offers" in data and "seller" in data["offers"]:
+                    seller = data["offers"]["seller"].get("name")
+        except:
+            pass
 
-def extract_seller(soup):
-    """Try multiple ways to get seller from static HTML."""
-    # JSON-LD check
-    for data in get_jsonld_data(soup):
-        if "offers" in data:
-            offers = data["offers"]
-            if isinstance(offers, dict) and "seller" in offers:
-                seller_name = offers["seller"].get("name")
-                if seller_name:
-                    return seller_name.strip(), "jsonld"
+    # Try meta or inline
+    if not seller:
+        sold_by = soup.find(text=lambda t: t and "Sold by" in t)
+        if sold_by and sold_by.parent:
+            seller = sold_by.parent.get_text(strip=True).replace("Sold by", "").strip()
 
-    # Look for 'Sold by' text
-    sold_by = soup.find(text=re.compile(r"Sold by", re.I))
-    if sold_by:
-        link = sold_by.find_next("a")
-        if link:
-            return link.get_text(strip=True), "sold_by_html"
+    # Warranty guesses
+    warr_text = soup.find(text=lambda t: t and "Warranty" in t)
+    if warr_text and warr_text.parent:
+        warranty = warr_text.parent.get_text(strip=True)
 
-    # Check meta or table rows
-    for label in soup.find_all(["td", "th"]):
-        if re.search(r"Seller", label.get_text(), re.I):
-            val_td = label.find_next("td")
-            if val_td:
-                return val_td.get_text(strip=True), "table_html"
+    return seller, warranty
 
-    return None, None
-
-def extract_warranty(soup):
-    """Try multiple ways to get warranty from static HTML."""
-    # Look for any element mentioning warranty
-    warranty_elem = soup.find(text=re.compile(r"warranty", re.I))
-    if warranty_elem:
-        val = warranty_elem.strip()
-        # Clean extra prefixes like 'Warranty: '
-        val = re.sub(r"(?i)warranty[:\s]*", "", val)
-        return val.strip(), "text_match"
-
-    # Search in specs list
-    for li in soup.select("li"):
-        if re.search(r"warranty", li.get_text(), re.I):
-            val = re.sub(r"(?i)warranty[:\s]*", "", li.get_text())
-            return val.strip(), "specs_list"
-
-    return None, None
-
-def fetch_rendered_html(url):
-    """Use requests-html to get fully rendered page."""
+# --- Helper: JS-rendered scrape ---
+def scrape_js(url):
     session = HTMLSession()
-    r = session.get(url)
-    r.html.render(timeout=20, sleep=2)
-    return BeautifulSoup(r.html.html, "lxml")
+    r = session.get(url, timeout=20)
+    r.html.render(timeout=30, sleep=2)
+    html = r.html.html
+    soup = BeautifulSoup(html, 'lxml')
 
-def get_product_info(url):
-    """Scrape product info from URL with static + rendered fallback."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-    }
-    r = requests.get(url, headers=headers, timeout=15)
-    soup = BeautifulSoup(r.text, "lxml")
+    seller, warranty = None, None
 
-    # Initial scrape
-    seller, seller_src = extract_seller(soup)
-    warranty, warranty_src = extract_warranty(soup)
-
-    # Rendered fallback if needed
-    if not seller or not warranty:
+    # Seller from JSON-LD after render
+    for script in soup.find_all("script", type="application/ld+json"):
         try:
-            rendered_soup = fetch_rendered_html(url)
-            if not seller:
-                seller, seller_src = extract_seller(rendered_soup)
-            if not warranty:
-                warranty, warranty_src = extract_warranty(rendered_soup)
-        except Exception as e:
-            print(f"Render failed for {url}: {e}")
+            data = json.loads(script.string.strip())
+            if isinstance(data, dict) and "offers" in data and "seller" in data["offers"]:
+                seller = data["offers"]["seller"].get("name")
+        except:
+            pass
 
-    return {
-        "url": url,
-        "seller": seller or "",
-        "seller_source": seller_src or "",
-        "warranty": warranty or "",
-        "warranty_source": warranty_src or ""
-    }
+    # Seller fallback
+    if not seller:
+        sold_by = soup.find(text=lambda t: t and "Sold by" in t)
+        if sold_by and sold_by.parent:
+            seller = sold_by.parent.get_text(strip=True).replace("Sold by", "").strip()
 
-# ----------------------------------
-# Streamlit UI
-# ----------------------------------
-st.title("E-commerce Product Data Extractor")
+    # Warranty
+    warr_text = soup.find(text=lambda t: t and "Warranty" in t)
+    if warr_text and warr_text.parent:
+        warranty = warr_text.parent.get_text(strip=True)
 
-site_url = st.text_input("Enter category or product page URL:")
+    return seller, warranty
 
-uploaded_file = st.file_uploader("Or upload a CSV/Excel file with product URLs", type=["csv", "xlsx"])
+# --- Main scraping ---
+def scrape_products(url_list):
+    results = []
+    for url in url_list:
+        seller, warranty = scrape_static(url)
 
-if st.button("Run Scraper"):
-    urls = []
+        # If missing seller or warranty, try JS
+        if not seller or not warranty:
+            try:
+                js_seller, js_warranty = scrape_js(url)
+                if not seller and js_seller:
+                    seller = js_seller
+                if not warranty and js_warranty:
+                    warranty = js_warranty
+            except Exception as e:
+                print(f"JS scrape failed for {url}: {e}")
 
-    if site_url:
-        urls.append(site_url.strip())
+        results.append({
+            "URL": url,
+            "Seller": seller or "NONE",
+            "Warranty": warranty or "NONE"
+        })
 
-    if uploaded_file:
-        if uploaded_file.name.endswith(".csv"):
-            df_input = pd.read_csv(uploaded_file)
-        else:
-            df_input = pd.read_excel(uploaded_file)
-        urls.extend(df_input.iloc[:, 0].dropna().tolist())
+        time.sleep(1)
 
-    if urls:
-        results = []
-        progress = st.progress(0)
-        for idx, link in enumerate(urls):
-            info = get_product_info(link)
-            results.append(info)
-            progress.progress((idx + 1) / len(urls))
-            sleep(uniform(0.5, 1.5))  # polite delay
+    return pd.DataFrame(results)
 
-        df = pd.DataFrame(results)
-        st.dataframe(df)
-        st.download_button("Download Excel", data=df.to_excel(index=False), file_name="products.xlsx")
+# --- Streamlit UI ---
+st.title("Product Warranty & Seller Scraper")
+
+uploaded_file = st.file_uploader("Upload a CSV or Excel file with URLs", type=["csv", "xlsx"])
+
+if uploaded_file:
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
+
+    urls = df.iloc[:, 0].dropna().tolist()
+    st.write(f"Found {len(urls)} URLs to scrape.")
+
+    if st.button("Start Scraping"):
+        output_df = scrape_products(urls)
+        st.dataframe(output_df)
+        output_df.to_excel("output.xlsx", index=False)
+        st.download_button("Download Excel", open("output.xlsx", "rb"), "results.xlsx")
