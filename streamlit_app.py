@@ -17,6 +17,7 @@ from playwright.sync_api import sync_playwright
 # -----------------------------
 # Auto-install Playwright browsers on Streamlit Cloud
 # -----------------------------
+# This block will run once when the app is deployed to install the browser.
 if "STREAMLIT_CLOUD" in os.environ:
     if not os.path.exists("/home/appuser/.cache/ms-playwright"):
         with st.spinner("Browser setup in progress, this may take a minute..."):
@@ -26,18 +27,24 @@ if "STREAMLIT_CLOUD" in os.environ:
 # Config
 # -----------------------------
 MAX_PAGES = 200
-MAX_WORKERS = 4
+MAX_WORKERS = 4 # Best for stability in cloud environments
 PAGE_SLEEP = (0.4, 0.9)
 
 # -----------------------------
 # Fetching Helper (Using Playwright)
 # -----------------------------
 def fetch_with_playwright(url: str):
+    """
+    Uses Playwright to launch a headless browser, render the page's JavaScript,
+    and return the final, complete HTML.
+    """
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
             page = browser.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # Go to the page and wait for the network to be mostly idle
+            page.goto(url, wait_until="networkidle", timeout=60000)
+            # An extra wait for a common product grid element to be sure
             page.wait_for_selector("article[class*='prd'], a[href$='.html']", timeout=20000)
             html_content = page.content()
             browser.close()
@@ -70,30 +77,26 @@ def find_product_objs_from_ldjson(soup: BeautifulSoup):
 
 def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
     """
-    Uses a multi-strategy approach to find product links, making it resilient
-    to website layout changes.
+    Uses a multi-strategy, context-aware approach to find product links,
+    making it resilient to website layout changes.
     """
     links = set()
 
-    # --- Strategy 1: The most common, modern selector ---
-    for a in soup.select("article[class*='-pvl-rect'] a"):
-        if href := a.get("href"):
-            links.add(urljoin(base_url, href.split("#")[0]))
+    # --- Definitive Strategy 1: Find the main product grid, then the links within ---
+    product_grid = soup.select_one("div[class*='-p-grid']")
+    if product_grid:
+        product_cards = product_grid.find_all("article", recursive=False)
+        for card in product_cards:
+            if link_tag := card.find("a", href=True):
+                links.add(urljoin(base_url, link_tag['href'].split("#")[0]))
     if links: return list(links)
 
-    # --- Strategy 2: The original, older selector ---
-    for a in soup.select("article.prd a.core"):
-        if href := a.get("href"):
-            links.add(urljoin(base_url, href.split("#")[0]))
+    # --- Definitive Strategy 2: Broader fallback for different grid structures ---
+    for card in soup.select("article[class*='prd']"):
+        if link_tag := card.find("a", href=True):
+            links.add(urljoin(base_url, link_tag['href'].split("#")[0]))
     if links: return list(links)
     
-    # --- Strategy 3: Ultimate fallback based on URL structure ---
-    # This finds any link that looks like a product page URL and contains a product image
-    for a in soup.find_all("a", href=re.compile(r"/.+\.html$")):
-        if a.find("img", {"data-src": True}):
-            if href := a.get("href"):
-                links.add(urljoin(base_url, href.split("#")[0]))
-                
     return list(links)
 
 def get_product_links(category_url: str, base_url: str, status_placeholder):
@@ -108,13 +111,12 @@ def get_product_links(category_url: str, base_url: str, status_placeholder):
         if not html_content: break
         
         soup = BeautifulSoup(html_content, "lxml")
-        found = parse_links_from_grid(soup, base_url)
+        found_links = parse_links_from_grid(soup, base_url)
         
-        if not found: break
+        if not found_links: break
         
-        # Check if we are adding new links to avoid infinite loops on last page
-        new_links = set(found) - all_links
-        if not new_links: break
+        new_links = set(found_links) - all_links
+        if not new_links: break # Stop if no new links are found on the page
         
         all_links.update(new_links)
         page += 1
@@ -195,7 +197,7 @@ if go := st.button("Scrape Category"):
         st.error("Please enter a valid Jumia category URL."); st.stop()
     st.subheader("Step 1 — Collecting product links")
     link_status = st.empty()
-    with st.spinner("Collecting product links…"):
+    with st.spinner("Collecting product links… This may take a moment."):
         links = get_product_links(category_url, base_url, link_status)
     st.success(f"Found {len(links)} product URLs.")
     if not links: st.stop()
