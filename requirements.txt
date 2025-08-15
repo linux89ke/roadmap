@@ -3,7 +3,7 @@ beautifulsoup4
 requests
 pandas
 openpyxl
-lxml
-xlsxwriter
 cloudscraper
 requests-html
+lxml[html_clean]
+lxml_html_clean
