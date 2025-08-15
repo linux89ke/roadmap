@@ -6,7 +6,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 from io import BytesIO
 from requests_html import HTMLSession
-import json, re, time, random
+import json
+import re
+import time
+import random
 
 # -----------------------------
 # Config
@@ -56,10 +59,12 @@ def all_ldjson_objects(soup: BeautifulSoup):
     for s in soup.find_all("script", {"type": "application/ld+json"}):
         try:
             text = s.string or s.get_text()
-            if not text: continue
+            if not text:
+                continue
             data = json.loads(text)
             if isinstance(data, list):
-                for item in data: yield item
+                for item in data:
+                    yield item
             else:
                 yield data
         except Exception:
@@ -112,17 +117,20 @@ def get_product_links(category_url: str, base_url: str, status_placeholder):
         page_url = f"{category_url}{sep}page={page}"
         status_placeholder.text(f"Collecting links… page {page}")
         r = fetch_with_retry(page_url)
-        if not r: break
+        if not r:
+            break
         soup = BeautifulSoup(r.text, "lxml")
         found = parse_links_from_grid(soup, base_url) | parse_links_from_itemlist(soup)
-        if not found: break
+        if not found:
+            break
         all_links |= found
         page += 1
         time.sleep(random.uniform(*PAGE_SLEEP))
     return list(all_links)
 
 def text_or_na(node, default="Not indicated"):
-    if not node: return default
+    if not node:
+        return default
     if hasattr(node, "get_text"):
         t = node.get_text(" ", strip=True)
     else:
@@ -177,7 +185,23 @@ def extract_basic_fields(soup: BeautifulSoup, url: str):
                 seller_text = seller_node.text.strip()
                 if seller_text and seller_text.lower() != "follow":
                     seller = seller_text
-    
+
+    if seller == "Not indicated" or seller.lower() == 'follow':
+        seller_header = soup.find(
+            lambda tag: tag.name in ['h2', 'h3'] and 'seller information' in tag.get_text(strip=True).lower()
+        )
+        if seller_header:
+            content_area = seller_header.find_next_sibling()
+            if content_area:
+                seller_node = content_area.find("a")
+                if not seller_node:
+                    seller_node = content_area.find(['p', 'div', 'h3'])
+                
+                if seller_node:
+                    seller_text = text_or_na(seller_node, default="")
+                    if "follow" not in seller_text.lower():
+                        seller = seller_text
+
     if seller == "Not indicated":
         jumia_express_badge = soup.select_one('img[alt*="Jumia Express"]')
         if jumia_express_badge:
@@ -193,6 +217,13 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
     warranty_specs = "Not indicated"
     warranty_address = "Not indicated"
 
+    if warranty_specs == "Not indicated":
+        warranty_heading = soup.find(lambda tag: tag.name in ['p', 'div'] and tag.get_text(strip=True).lower() == 'warranty')
+        if warranty_heading:
+            warranty_detail_node = warranty_heading.find_next_sibling()
+            if warranty_detail_node:
+                warranty_specs = text_or_na(warranty_detail_node)
+
     for tr in soup.select("tr"):
         th = tr.find("th")
         td = tr.find("td")
@@ -204,7 +235,6 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
         elif "warranty" in key and "address" not in key and warranty_specs == "Not indicated":
             warranty_specs = val
 
-    # NEW: Check for promotional badges
     if warranty_specs == "Not indicated":
         promo_tags = soup.find_all(
             lambda tag: tag.name in ['p', 'span', 'div'] and re.search(r'\b\d+\s?(year|yr|month)s?\s+warranty\b', tag.get_text(), re.I)
