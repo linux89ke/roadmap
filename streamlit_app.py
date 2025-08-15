@@ -274,11 +274,11 @@ def parse_product(url: str):
 # -----------------------------
 # Streamlit UI
 # -----------------------------
-st.set_page_config(page_title="Jumia Multi-Country Scraper", layout="wide")
-st.title("Jumia Multi-Country Warranty Scraper 🌍")
-st.caption("Paste a Jumia category URL from any country (e.g., Kenya, Uganda). The app will automatically detect the site and scrape the data.")
+st.set_page_config(page_title="Scraper", layout="wide")
+st.title("Warranty Scraper 🌍")
+st.caption("Paste a category URL from any country (e.g., Kenya, Uganda). The app will automatically detect the site and scrape the data.")
 
-category_url = st.text_input("Enter Jumia category URL (e.g., https://www.jumia.ug/laptops/)")
+category_url = st.text_input("Enter  category URL (e.g., https://www.jumia.ug/laptops/)")
 go = st.button("Scrape Category")
 
 if go and category_url:
