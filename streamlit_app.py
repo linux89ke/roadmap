@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup
 from requests_html import HTMLSession
 import concurrent.futures
@@ -12,39 +11,35 @@ st.title("Product Data Scraper")
 # Input for category link
 category_url = st.text_input("Enter category URL")
 
+session = HTMLSession()
+
 def scrape_product_page(url):
     """Scrape individual product page for seller, warranty, SKU, and price."""
-    session = HTMLSession()
     r = session.get(url)
     try:
         r.html.render(timeout=20, sleep=2)
     except:
-        pass  # fallback if JS rendering fails
+        pass
     
     soup = BeautifulSoup(r.html.html, "lxml")
 
-    # Product title
     title_elem = soup.find("h1")
     title = title_elem.get_text(strip=True) if title_elem else "N/A"
 
-    # Warranty
     warranty = "N/A"
     for text_elem in soup.find_all(string=True):
         if "warranty" in text_elem.lower():
             warranty = text_elem.strip()
             break
 
-    # Seller
     seller_elem = soup.select_one("a.-m.-upp.-hov-or5.-hov-mt1.-cl-nl, div.seller a")
     seller = seller_elem.get_text(strip=True) if seller_elem else "N/A"
 
-    # SKU
     sku = "N/A"
     sku_elem = soup.find(string=lambda t: "SKU" in t)
     if sku_elem:
         sku = sku_elem.strip().split(":")[-1].strip()
 
-    # Price
     price_elem = soup.select_one("span.-b.-ubpt.-tal.-fs24")
     price = price_elem.get_text(strip=True) if price_elem else "N/A"
 
@@ -58,17 +53,19 @@ def scrape_product_page(url):
     }
 
 def scrape_category(url):
-    """Scrape all product links from category page."""
+    """Scrape all product links from category page using JS rendering."""
     all_links = []
     page = 1
 
     while True:
-        page_url = f"{url}?page={page}"
-        resp = requests.get(page_url, headers={"User-Agent": "Mozilla/5.0"})
-        if resp.status_code != 200:
-            break
-        
-        soup = BeautifulSoup(resp.text, "lxml")
+        page_url = f"{url}&page={page}"
+        r = session.get(page_url)
+        try:
+            r.html.render(timeout=20, sleep=2)
+        except:
+            pass
+
+        soup = BeautifulSoup(r.html.html, "lxml")
         product_links = [
             "https://www.jumia.co.ke" + a["href"]
             for a in soup.select("a.core") if a.get("href")
@@ -79,7 +76,7 @@ def scrape_category(url):
 
         all_links.extend(product_links)
         page += 1
-        time.sleep(0.5)  # Avoid rate-limit
+        time.sleep(0.5)
 
     return all_links
 
