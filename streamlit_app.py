@@ -289,11 +289,11 @@ def parse_product(url: str):
 # -----------------------------
 # Streamlit UI
 # -----------------------------
-st.set_page_config(page_title="Jumia KE Warranty Scraper", layout="wide")
-st.title("Jumia Kenya Category Warranty Scraper 🔎")
-st.caption("Paste a Jumia Kenya category URL. The app collects all product links, then scrapes warranty, seller, SKU, price.")
+st.set_page_config(page_title="Category", layout="wide")
+st.title("Category Scraper 🔎")
+st.caption("Paste a category URL. The app collects all product links, then scrapes warranty, seller, SKU, price.")
 
-category_url = st.text_input("Enter Jumia category URL (e.g., https://www.jumia.co.ke/television-sets/)")
+category_url = st.text_input("Enter category URL (e.g., https://www.jumia.co.ke/television-sets/)")
 go = st.button("Scrape Category")
 
 if go and category_url:
