@@ -21,7 +21,7 @@ REQ_RETRIES = 3
 REQ_TIMEOUT = 35
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 1.0; Win64; x64) "
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/115.0.0.0 Safari/537.36"
     ),
@@ -49,7 +49,8 @@ def fetch_with_js(url, retries=2):
     for _ in range(retries):
         try:
             r = html_session.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
-            r.html.render(timeout=40, sleep=3, keep_page=True)
+            # Increased timeout for complex pages
+            r.html.render(timeout=60, sleep=3, keep_page=True)
             r.close() # Important to close the browser tab to conserve memory
             return r
         except Exception:
@@ -128,12 +129,12 @@ def text_or_na(node, default="Not indicated"):
     return t if t else default
 
 # -----------------------------
-# Core Extraction Logic (Rewritten for Precision)
+# Core Extraction Logic (Definitive Multi-Strategy Version)
 # -----------------------------
 def extract_basic_fields(soup: BeautifulSoup):
     name, price, sku, seller = "Not indicated", "Not indicated", "Not indicated", "Not indicated"
 
-    # 1. Primary source: JSON-LD structured data
+    # --- Strategy 1: JSON-LD (Most reliable) ---
     products = find_product_objs_from_ldjson(soup)
     if products:
         p = products[0]
@@ -144,7 +145,7 @@ def extract_basic_fields(soup: BeautifulSoup):
             price = offers.get("price") or offers.get("priceSpecification", {}).get("price") or price
             if isinstance(offers.get("seller"), dict): seller = offers["seller"].get("name") or seller
 
-    # 2. Fallbacks using visual elements (since page is fully rendered)
+    # --- Strategy 2: Visible HTML Elements ---
     if name == "Not indicated": name = text_or_na(soup.select_one("h1"))
     if price == "Not indicated": price = text_or_na(soup.select_one("span.-b"))
     if sku == "Not indicated":
@@ -153,20 +154,18 @@ def extract_basic_fields(soup: BeautifulSoup):
             if re.search(r"\bSKU\b\s*:", txt, re.I):
                 sku = txt.split(":", 1)[-1].strip() or "Not indicated"; break
 
-    # 3. Precise Seller Logic
+    # --- Strategy 3: Precise Seller Information Box ---
     if seller == "Not indicated":
-        # Look for the "Seller Information" box
         seller_header = soup.find(lambda t: t.name in ['h2', 'h3'] and 'seller information' in t.text.lower())
         if seller_header:
             content_area = seller_header.find_next_sibling()
             if content_area:
-                # Find a link or plain text, but ignore "Follow"
                 node = content_area.find("a") or content_area.find(['p', 'div', 'h3'])
                 if node:
                     seller_text = text_or_na(node)
                     if "follow" not in seller_text.lower(): seller = seller_text
     
-    # 4. Final Fallback: Check for Jumia Express items
+    # --- Strategy 4: Jumia Express Badge ---
     if seller == "Not indicated":
         if soup.select_one('img[alt*="Jumia Express"]'): seller = "Jumia"
         
@@ -175,31 +174,41 @@ def extract_basic_fields(soup: BeautifulSoup):
 def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
     warranty_title, warranty_specs, warranty_address = "Not indicated", "Not indicated", "Not indicated"
 
-    # 1. Check title first
+    # --- Strategy 1: Check product title ---
     if re.search(r"(warranty|\b\d+\s?(yr|yrs|year|years)\b)", title_text or "", re.I):
         warranty_title = title_text
 
-    # 2. Look for the structured sidebar section (most reliable)
+    # --- Strategy 2: Look for the structured sidebar section (Most reliable) ---
     warranty_heading = soup.find(lambda t: t.name in ['p', 'div', 'span'] and t.get_text(strip=True).lower() == 'warranty')
     if warranty_heading:
         detail_node = warranty_heading.find_next_sibling()
         if detail_node: warranty_specs = text_or_na(detail_node)
 
-    # 3. Look in the main specifications table (very specific selector to avoid other tables)
-    for tr in soup.select("div.-pdp-add-info tr"):
-        cells = tr.find_all("td")
-        if len(cells) == 2:
-            key = cells[0].get_text(strip=True).lower()
-            val = cells[1].get_text(strip=True)
-            # Use found value only if we haven't found a better one already
-            if "warranty" in key and "address" not in key and warranty_specs == "Not indicated": warranty_specs = val
-            if "warranty address" in key and warranty_address == "Not indicated": warranty_address = val
+    # --- Strategy 3: Look in the main specifications table ---
+    # This check will only apply if the more reliable sidebar check fails
+    if warranty_specs == "Not indicated":
+        for tr in soup.select("div.-pdp-add-info tr"):
+            cells = tr.find_all("td")
+            if len(cells) == 2:
+                key = cells[0].get_text(strip=True).lower()
+                val = cells[1].get_text(strip=True)
+                if "warranty" in key and "address" not in key: warranty_specs = val; break # Stop after first match
 
-    # 4. Look for promotional badges (less reliable, but good fallback)
+    # --- Strategy 4: Look for promotional badges ---
     if warranty_specs == "Not indicated":
         promo = soup.find(lambda t: t.name in ['p', 'span', 'div'] and re.search(r'\b\d+\s?(year|yr|month)s?\s+warranty\b', t.text, re.I))
         if promo: warranty_specs = text_or_na(promo)
-        
+
+    # --- Strategy 5: Find Warranty Address Separately ---
+    # This can be found even if the main warranty spec is elsewhere
+    for tr in soup.select("div.-pdp-add-info tr, table tr"):
+        key_cell = tr.find(['th', 'td'])
+        if key_cell:
+            key_text = key_cell.get_text(strip=True).lower()
+            if "warranty address" in key_text:
+                val_cell = key_cell.find_next_sibling(['td'])
+                if val_cell: warranty_address = val_cell.get_text(strip=True); break
+                
     return warranty_title, warranty_specs, warranty_address
 
 def parse_product(url: str):
