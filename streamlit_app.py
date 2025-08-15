@@ -17,17 +17,16 @@ from playwright.sync_api import sync_playwright
 # -----------------------------
 # Auto-install Playwright browsers on Streamlit Cloud
 # -----------------------------
-# This block will run once when the app is deployed to install the browser.
 if "STREAMLIT_CLOUD" in os.environ:
     if not os.path.exists("/home/appuser/.cache/ms-playwright"):
-        with st.spinner("Browser setup is in progress, this may take a minute..."):
+        with st.spinner("Browser setup in progress, this may take a minute..."):
             subprocess.run(["playwright", "install", "--with-deps"], check=True)
 
 # -----------------------------
 # Config
 # -----------------------------
 MAX_PAGES = 200
-MAX_WORKERS = 4 # Best for stability in cloud environments
+MAX_WORKERS = 4
 PAGE_SLEEP = (0.4, 0.9)
 
 # -----------------------------
@@ -38,10 +37,8 @@ def fetch_with_playwright(url: str):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
             page = browser.new_page()
-            # Go to the page and wait for the network to be mostly idle
-            page.goto(url, wait_until="networkidle", timeout=60000)
-            # An extra wait for the main content area to be sure
-            page.wait_for_selector("main[role='main'], div.-pdp", timeout=20000)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_selector("article[class*='prd'], a[href$='.html']", timeout=20000)
             html_content = page.content()
             browser.close()
             return html_content
@@ -50,7 +47,7 @@ def fetch_with_playwright(url: str):
         return None
 
 # -----------------------------
-# Parsing Helpers (No changes needed here)
+# Parsing Helpers
 # -----------------------------
 def all_ldjson_objects(soup: BeautifulSoup):
     for s in soup.find_all("script", {"type": "application/ld+json"}):
@@ -72,26 +69,58 @@ def find_product_objs_from_ldjson(soup: BeautifulSoup):
     return products
 
 def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
+    """
+    Uses a multi-strategy approach to find product links, making it resilient
+    to website layout changes.
+    """
     links = set()
+
+    # --- Strategy 1: The most common, modern selector ---
+    for a in soup.select("article[class*='-pvl-rect'] a"):
+        if href := a.get("href"):
+            links.add(urljoin(base_url, href.split("#")[0]))
+    if links: return list(links)
+
+    # --- Strategy 2: The original, older selector ---
     for a in soup.select("article.prd a.core"):
-        href = a.get("href")
-        if href: links.add(urljoin(base_url, href.split("#")[0]))
-    return links
+        if href := a.get("href"):
+            links.add(urljoin(base_url, href.split("#")[0]))
+    if links: return list(links)
+    
+    # --- Strategy 3: Ultimate fallback based on URL structure ---
+    # This finds any link that looks like a product page URL and contains a product image
+    for a in soup.find_all("a", href=re.compile(r"/.+\.html$")):
+        if a.find("img", {"data-src": True}):
+            if href := a.get("href"):
+                links.add(urljoin(base_url, href.split("#")[0]))
+                
+    return list(links)
 
 def get_product_links(category_url: str, base_url: str, status_placeholder):
     all_links = set()
     page = 1
-    html_content = fetch_with_playwright(category_url) # Use Playwright for category pages too
-    if not html_content: return []
-    
-    soup = BeautifulSoup(html_content, "lxml")
-    links.update(parse_links_from_grid(soup, base_url))
-    
-    # Simple pagination logic (can be expanded if needed)
-    # For now, we focus on the first page, as link finding can be complex
-    # You can re-implement the while loop here if multi-page is critical
-    
-    return list(links)
+    while page <= MAX_PAGES:
+        sep = "&" if "?" in category_url else "?"
+        page_url = f"{category_url}{sep}page={page}"
+        status_placeholder.text(f"Collecting links… page {page}")
+        
+        html_content = fetch_with_playwright(page_url)
+        if not html_content: break
+        
+        soup = BeautifulSoup(html_content, "lxml")
+        found = parse_links_from_grid(soup, base_url)
+        
+        if not found: break
+        
+        # Check if we are adding new links to avoid infinite loops on last page
+        new_links = set(found) - all_links
+        if not new_links: break
+        
+        all_links.update(new_links)
+        page += 1
+        time.sleep(random.uniform(*PAGE_SLEEP))
+        
+    return list(all_links)
 
 def text_or_na(node, default="Not indicated"):
     if not node: return default
@@ -99,7 +128,7 @@ def text_or_na(node, default="Not indicated"):
     return t if t else default
 
 # -----------------------------
-# Core Extraction Logic (No changes needed here)
+# Core Extraction Logic
 # -----------------------------
 def extract_basic_fields(soup: BeautifulSoup):
     name, price, sku, seller = "Not indicated", "Not indicated", "Not indicated", "Not indicated"
@@ -166,7 +195,7 @@ if go := st.button("Scrape Category"):
         st.error("Please enter a valid Jumia category URL."); st.stop()
     st.subheader("Step 1 — Collecting product links")
     link_status = st.empty()
-    with st.spinner("Collecting product links from the first page…"):
+    with st.spinner("Collecting product links…"):
         links = get_product_links(category_url, base_url, link_status)
     st.success(f"Found {len(links)} product URLs.")
     if not links: st.stop()
