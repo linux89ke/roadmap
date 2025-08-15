@@ -3,14 +3,14 @@ import pandas as pd
 import cloudscraper
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from io import BytesIO
 import json, re, time, random
 
 # -----------------------------
 # Config
 # -----------------------------
-BASE_URL = "https://www.jumia.co.ke"
+# BASE_URL is no longer a global constant; it's determined dynamically.
 MAX_PAGES = 200        # pagination safety cap
 MAX_WORKERS = 8        # threads for product scraping
 PAGE_SLEEP = (0.4, 0.9)  # jitter between category pages
@@ -48,7 +48,6 @@ def all_ldjson_objects(soup: BeautifulSoup):
             if not text:
                 continue
             data = json.loads(text)
-            # Flatten first level
             if isinstance(data, list):
                 for item in data:
                     yield item
@@ -61,38 +60,36 @@ def find_product_objs_from_ldjson(soup: BeautifulSoup):
     """Return list of dicts that look like Product objects (robust across shapes)."""
     products = []
     for obj in all_ldjson_objects(soup):
-        # @graph container
         if isinstance(obj, dict) and "@graph" in obj and isinstance(obj["@graph"], list):
             for g in obj["@graph"]:
                 if isinstance(g, dict) and g.get("@type") == "Product":
                     products.append(g)
-        # Direct Product
         if isinstance(obj, dict) and obj.get("@type") == "Product":
             products.append(obj)
-        # mainEntity Product (some pages)
         if isinstance(obj, dict) and isinstance(obj.get("mainEntity"), dict):
             me = obj["mainEntity"]
             if me.get("@type") == "Product":
                 products.append(me)
     return products
 
-def parse_links_from_grid(soup: BeautifulSoup):
+def parse_links_from_grid(soup: BeautifulSoup, base_url: str): # Accepts base_url
     """
     NOTE: The selector 'article.prd a.core' is the most likely part of the script
     to become outdated. If the scraper fails to find links, update this selector
     by inspecting the Jumia category page's HTML.
     """
     links = set()
-    for a in soup.select("article.prd a.core"): # <-- THIS SELECTOR MAY NEED UPDATING
+    for a in soup.select("article.prd a.core"): 
         href = a.get("href")
         if href:
-            links.add(urljoin(BASE_URL, href.split("#")[0]))
-    # fallback: any <a.core>
+            # Use the dynamic base_url to construct the full product URL
+            links.add(urljoin(base_url, href.split("#")[0]))
     if not links:
         for a in soup.select("a.core"):
             href = a.get("href")
             if href and href.startswith("/"):
-                links.add(urljoin(BASE_URL, href.split("#")[0]))
+                # Use the dynamic base_url here as well
+                links.add(urljoin(base_url, href.split("#")[0]))
     return links
 
 def parse_links_from_itemlist(soup: BeautifulSoup):
@@ -107,7 +104,7 @@ def parse_links_from_itemlist(soup: BeautifulSoup):
                         links.add(url.split("#")[0])
     return links
 
-def get_product_links(category_url: str, status_placeholder):
+def get_product_links(category_url: str, base_url: str, status_placeholder): # Accepts base_url
     all_links = set()
     page = 1
     while page <= MAX_PAGES:
@@ -118,11 +115,11 @@ def get_product_links(category_url: str, status_placeholder):
         if not r:
             break
         soup = BeautifulSoup(r.text, "lxml")
-        grid = parse_links_from_grid(soup)
+        # Pass the base_url down to the parsing function
+        grid = parse_links_from_grid(soup, base_url)
         itemlist = parse_links_from_itemlist(soup)
         found = grid | itemlist
         if not found:
-            # assume no more pages
             break
         all_links |= found
         page += 1
@@ -172,7 +169,6 @@ def extract_basic_fields(soup: BeautifulSoup):
                 sku = txt.split(":", 1)[-1].strip() or "Not indicated"
                 break
     
-    # Existing fallbacks for Seller
     if seller == "Not indicated":
         sold_by = soup.find(string=re.compile(r"Sold by", re.I))
         if sold_by and sold_by.parent:
@@ -184,20 +180,15 @@ def extract_basic_fields(soup: BeautifulSoup):
         if a:
             seller = text_or_na(a)
             
-    # DEFINITIVE FIX FOR SELLER LOGIC
-    # This version correctly targets the sibling element of the header.
     if seller == "Not indicated" or seller.lower() == 'follow':
         seller_header = soup.find(
             lambda tag: tag.name in ['h2', 'h3'] and 'seller information' in tag.get_text(strip=True).lower()
         )
         if seller_header:
-            # The actual seller info is in the container immediately FOLLOWING the header.
             content_area = seller_header.find_next_sibling()
             if content_area:
-                # Find the first link within that specific content area.
                 seller_link = content_area.find("a")
                 if seller_link:
-                    # Final check to ensure we didn't accidentally grab a 'follow' link anyway.
                     link_text = text_or_na(seller_link, default="")
                     if "follow" not in link_text.lower():
                         seller = link_text
@@ -206,7 +197,6 @@ def extract_basic_fields(soup: BeautifulSoup):
 
 def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
     """Warranty in title + warranty spec + warranty address from various blocks."""
-    # Warranty in title
     warranty_title = "Not indicated"
     if re.search(r"(warranty|\b\d+\s?(yr|yrs|year|years)\b)", title_text or "", re.I):
         warranty_title = title_text
@@ -214,12 +204,10 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
     warranty_specs = "Not indicated"
     warranty_address = "Not indicated"
 
-    # Tables
     for tr in soup.select("tr"):
         th = tr.find("th")
         td = tr.find("td")
-        if not th:
-            continue
+        if not th: continue
         key = th.get_text(" ", strip=True).lower()
         val = text_or_na(td)
         if "warranty address" in key and warranty_address == "Not indicated":
@@ -227,7 +215,6 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
         elif "warranty" in key and "address" not in key and warranty_specs == "Not indicated":
             warranty_specs = val
 
-    # Bullet lists under spec sections
     for li in soup.select("div.-pvs ul li, section ul li"):
         raw = li.get_text(" ", strip=True)
         if ":" in raw:
@@ -239,7 +226,6 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
             elif "warranty" in key and "address" not in key and warranty_specs == "Not indicated":
                 warranty_specs = val
 
-    # Definition lists (dt/dd)
     for dt in soup.find_all("dt"):
         key = dt.get_text(" ", strip=True).lower()
         dd = dt.find_next_sibling("dd")
@@ -249,7 +235,6 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
         elif "warranty" in key and "address" not in key and warranty_specs == "Not indicated":
             warranty_specs = val
 
-    # As a last resort, scan paragraphs
     if warranty_specs == "Not indicated":
         for p in soup.find_all(["p", "li"]):
             txt = p.get_text(" ", strip=True)
@@ -289,19 +274,31 @@ def parse_product(url: str):
 # -----------------------------
 # Streamlit UI
 # -----------------------------
-st.set_page_config(page_title="Jumia KE Warranty Scraper", layout="wide")
-st.title("Jumia Kenya Category Warranty Scraper 🔎")
-st.caption("Paste a Jumia Kenya category URL. The app collects all product links, then scrapes warranty, seller, SKU, price.")
+st.set_page_config(page_title="Jumia Multi-Country Scraper", layout="wide")
+st.title("Jumia Multi-Country Warranty Scraper 🌍")
+st.caption("Paste a Jumia category URL from any country (e.g., Kenya, Uganda). The app will automatically detect the site and scrape the data.")
 
-category_url = st.text_input("Enter Jumia category URL (e.g., https://www.jumia.co.ke/television-sets/)")
+category_url = st.text_input("Enter Jumia category URL (e.g., https://www.jumia.ug/laptops/)")
 go = st.button("Scrape Category")
 
 if go and category_url:
+    # 1. Dynamically determine the base URL from user input
+    try:
+        parsed_url = urlparse(category_url)
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        if not all([parsed_url.scheme, parsed_url.netloc, "jumia" in parsed_url.netloc]):
+             raise ValueError
+        st.info(f"Detected Jumia site: **{base_url}**")
+    except (ValueError, AttributeError):
+        st.error("Please enter a valid Jumia category URL (e.g., https://www.jumia.co.ke/...)")
+        st.stop()
+    
     # Phase 1: collect product links
     st.subheader("Step 1 — Collecting product links")
     link_status = st.empty()
     with st.spinner("Collecting product links…"):
-        links = get_product_links(category_url, link_status)
+        # 2. Pass the dynamic base_url to the link collection function
+        links = get_product_links(category_url, base_url, link_status)
     st.success(f"Found {len(links)} product URLs.")
     if not links:
         st.stop()
@@ -345,6 +342,6 @@ if go and category_url:
     st.download_button(
         "📥 Download Excel",
         data=to_excel_bytes(df),
-        file_name="jumia_warranty_products.xlsx",
+        file_name="jumia_products.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
