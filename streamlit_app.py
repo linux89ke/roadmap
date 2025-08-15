@@ -11,9 +11,9 @@ import json, re, time, random
 # Config
 # -----------------------------
 BASE_URL = "https://www.jumia.co.ke"
-MAX_PAGES = 200           # pagination safety cap
-MAX_WORKERS = 8           # threads for product scraping
-PAGE_SLEEP = (0.4, 0.9)   # jitter between category pages
+MAX_PAGES = 200        # pagination safety cap
+MAX_WORKERS = 8        # threads for product scraping
+PAGE_SLEEP = (0.4, 0.9)  # jitter between category pages
 REQ_RETRIES = 3
 REQ_TIMEOUT = 25
 
@@ -77,8 +77,13 @@ def find_product_objs_from_ldjson(soup: BeautifulSoup):
     return products
 
 def parse_links_from_grid(soup: BeautifulSoup):
+    """
+    NOTE: The selector 'article.prd a.core' is the most likely part of the script
+    to become outdated. If the scraper fails to find links, update this selector
+    by inspecting the Jumia category page's HTML.
+    """
     links = set()
-    for a in soup.select("article.prd a.core"):
+    for a in soup.select("article.prd a.core"): # <-- THIS SELECTOR MAY NEED UPDATING
         href = a.get("href")
         if href:
             links.add(urljoin(BASE_URL, href.split("#")[0]))
@@ -146,7 +151,6 @@ def extract_basic_fields(soup: BeautifulSoup):
         p = products[0]
         name = p.get("name") or name
         sku = p.get("sku") or sku
-        # price in offers
         offers = p.get("offers")
         if isinstance(offers, dict):
             price = offers.get("price") or offers.get("priceSpecification", {}).get("price") or price
@@ -159,36 +163,38 @@ def extract_basic_fields(soup: BeautifulSoup):
         h1 = soup.select_one("h1")
         name = text_or_na(h1)
     if price == "Not indicated":
-        meta_price = soup.find("meta", {"itemprop": "price"}) or soup.find("meta", {"property": "product:price:amount"})
-        if meta_price and meta_price.get("content"):
-            price = meta_price["content"]
-        else:
-            price_span = soup.select_one("span.-b")
-            price = text_or_na(price_span)
+        price_span = soup.select_one("span.-b")
+        price = text_or_na(price_span)
     if sku == "Not indicated":
-        # look in table / list text
-        for tr in soup.select("tr"):
-            th = tr.find("th")
-            td = tr.find("td")
-            if th and re.search(r"\bSKU\b", th.get_text(" ", strip=True), re.I):
-                sku = text_or_na(td)
+        for li in soup.select("li"):
+            txt = li.get_text(" ", strip=True)
+            if re.search(r"\bSKU\b\s*:", txt, re.I):
+                sku = txt.split(":", 1)[-1].strip() or "Not indicated"
                 break
-        if sku == "Not indicated":
-            for li in soup.select("li"):
-                txt = li.get_text(" ", strip=True)
-                if re.search(r"\bSKU\b\s*:", txt, re.I):
-                    sku = txt.split(":", 1)[-1].strip() or "Not indicated"
-                    break
+    
+    # Existing fallbacks for Seller
     if seller == "Not indicated":
         sold_by = soup.find(string=re.compile(r"Sold by", re.I))
         if sold_by and sold_by.parent:
             a = sold_by.parent.find_next("a")
             if a:
                 seller = text_or_na(a)
-        if seller == "Not indicated":
-            a = soup.find("a", {"data-testid": "seller-name"})
-            if a:
-                seller = text_or_na(a)
+    if seller == "Not indicated":
+        a = soup.find("a", {"data-testid": "seller-name"})
+        if a:
+            seller = text_or_na(a)
+            
+    # -- NEW, MORE ROBUST FALLBACK ADDED HERE --
+    # This looks for the "Seller Information" box specifically.
+    if seller == "Not indicated":
+        seller_header = soup.find(
+            lambda tag: tag.name in ['h2', 'h3'] and 'seller information' in tag.get_text(strip=True).lower()
+        )
+        if seller_header:
+            # The seller's name is usually the first link right after this header
+            seller_link = seller_header.find_next("a")
+            if seller_link:
+                seller = text_or_na(seller_link)
 
     return name, price, sku, seller
 
