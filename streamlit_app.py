@@ -135,7 +135,6 @@ def extract_basic_fields(soup: BeautifulSoup, url: str):
     sku = "Not indicated"
     seller = "Not indicated"
 
-    # JSON-LD first
     products = find_product_objs_from_ldjson(soup)
     if products:
         p = products[0]
@@ -148,7 +147,6 @@ def extract_basic_fields(soup: BeautifulSoup, url: str):
             if isinstance(sel, dict):
                 seller = sel.get("name") or seller
 
-    # Fallbacks for basic info
     if name == "Not indicated":
         h1 = soup.select_one("h1")
         name = text_or_na(h1)
@@ -164,7 +162,6 @@ def extract_basic_fields(soup: BeautifulSoup, url: str):
                 sku = txt.split(":", 1)[-1].strip() or "Not indicated"
                 break
     
-    # Primary fallbacks for Seller
     if seller == "Not indicated":
         sold_by = soup.find(string=re.compile(r"Sold by", re.I))
         if sold_by and sold_by.parent:
@@ -172,7 +169,6 @@ def extract_basic_fields(soup: BeautifulSoup, url: str):
             if a:
                 seller = text_or_na(a)
 
-    # JS-Render Fallback for lazy-loaded sellers
     if seller == "Not indicated":
         r_js = fetch_with_js(url)
         if r_js:
@@ -182,7 +178,6 @@ def extract_basic_fields(soup: BeautifulSoup, url: str):
                 if seller_text and seller_text.lower() != "follow":
                     seller = seller_text
     
-    # FINAL FALLBACK: Check if it's a Jumia Express item.
     if seller == "Not indicated":
         jumia_express_badge = soup.select_one('img[alt*="Jumia Express"]')
         if jumia_express_badge:
@@ -209,25 +204,13 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
         elif "warranty" in key and "address" not in key and warranty_specs == "Not indicated":
             warranty_specs = val
 
-    for li in soup.select("div.-pvs ul li, section ul li"):
-        raw = li.get_text(" ", strip=True)
-        if ":" in raw:
-            k, v = raw.split(":", 1)
-            key = k.strip().lower()
-            val = v.strip() or "Not indicated"
-            if "warranty address" in key and warranty_address == "Not indicated":
-                warranty_address = val
-            elif "warranty" in key and "address" not in key and warranty_specs == "Not indicated":
-                warranty_specs = val
-
-    for dt in soup.find_all("dt"):
-        key = dt.get_text(" ", strip=True).lower()
-        dd = dt.find_next_sibling("dd")
-        val = text_or_na(dd)
-        if "warranty address" in key and warranty_address == "Not indicated":
-            warranty_address = val
-        elif "warranty" in key and "address" not in key and warranty_specs == "Not indicated":
-            warranty_specs = val
+    # NEW: Check for promotional badges
+    if warranty_specs == "Not indicated":
+        promo_tags = soup.find_all(
+            lambda tag: tag.name in ['p', 'span', 'div'] and re.search(r'\b\d+\s?(year|yr|month)s?\s+warranty\b', tag.get_text(), re.I)
+        )
+        if promo_tags:
+            warranty_specs = text_or_na(promo_tags[0])
 
     if warranty_specs == "Not indicated":
         for p in soup.find_all(["p", "li"]):
@@ -236,6 +219,17 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
                 warranty_specs = txt
                 break
 
+    if warranty_address == "Not indicated":
+        for tr in soup.select("tr"):
+            th = tr.find("th")
+            td = tr.find("td")
+            if not th: continue
+            key = th.get_text(" ", strip=True).lower()
+            val = text_or_na(td)
+            if "warranty address" in key:
+                warranty_address = val
+                break
+                
     return warranty_title, warranty_specs, warranty_address
 
 def parse_product(url: str):
