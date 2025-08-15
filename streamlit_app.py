@@ -25,14 +25,14 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/115.0.0.0 Safari/537.36"
     ),
-    "Accept-Language": "en-US,en;q0.9",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 scraper = cloudscraper.create_scraper(browser={"custom": HEADERS["User-Agent"]})
 html_session = HTMLSession()
 
 # -----------------------------
-# Helpers
+# Fetching Helpers
 # -----------------------------
 def fetch_with_retry(url, retries=REQ_RETRIES):
     for attempt in range(1, retries + 1):
@@ -50,12 +50,15 @@ def fetch_with_js(url, retries=2):
         try:
             r = html_session.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
             r.html.render(timeout=40, sleep=3, keep_page=True)
-            r.close() # Important to close the browser tab
+            r.close() # Important to close the browser tab to conserve memory
             return r
         except Exception:
             pass
     return None
 
+# -----------------------------
+# Parsing Helpers
+# -----------------------------
 def all_ldjson_objects(soup: BeautifulSoup):
     for s in soup.find_all("script", {"type": "application/ld+json"}):
         try:
@@ -124,8 +127,13 @@ def text_or_na(node, default="Not indicated"):
     t = node.get_text(" ", strip=True) if hasattr(node, "get_text") else str(node).strip()
     return t if t else default
 
+# -----------------------------
+# Core Extraction Logic (Rewritten for Precision)
+# -----------------------------
 def extract_basic_fields(soup: BeautifulSoup):
     name, price, sku, seller = "Not indicated", "Not indicated", "Not indicated", "Not indicated"
+
+    # 1. Primary source: JSON-LD structured data
     products = find_product_objs_from_ldjson(soup)
     if products:
         p = products[0]
@@ -135,6 +143,8 @@ def extract_basic_fields(soup: BeautifulSoup):
         if isinstance(offers, dict):
             price = offers.get("price") or offers.get("priceSpecification", {}).get("price") or price
             if isinstance(offers.get("seller"), dict): seller = offers["seller"].get("name") or seller
+
+    # 2. Fallbacks using visual elements (since page is fully rendered)
     if name == "Not indicated": name = text_or_na(soup.select_one("h1"))
     if price == "Not indicated": price = text_or_na(soup.select_one("span.-b"))
     if sku == "Not indicated":
@@ -142,44 +152,61 @@ def extract_basic_fields(soup: BeautifulSoup):
             txt = li.get_text(" ", strip=True)
             if re.search(r"\bSKU\b\s*:", txt, re.I):
                 sku = txt.split(":", 1)[-1].strip() or "Not indicated"; break
+
+    # 3. Precise Seller Logic
     if seller == "Not indicated":
+        # Look for the "Seller Information" box
         seller_header = soup.find(lambda t: t.name in ['h2', 'h3'] and 'seller information' in t.text.lower())
         if seller_header:
             content_area = seller_header.find_next_sibling()
             if content_area:
+                # Find a link or plain text, but ignore "Follow"
                 node = content_area.find("a") or content_area.find(['p', 'div', 'h3'])
                 if node:
                     seller_text = text_or_na(node)
                     if "follow" not in seller_text.lower(): seller = seller_text
+    
+    # 4. Final Fallback: Check for Jumia Express items
     if seller == "Not indicated":
         if soup.select_one('img[alt*="Jumia Express"]'): seller = "Jumia"
+        
     return name, price, sku, seller
 
 def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
     warranty_title, warranty_specs, warranty_address = "Not indicated", "Not indicated", "Not indicated"
+
+    # 1. Check title first
     if re.search(r"(warranty|\b\d+\s?(yr|yrs|year|years)\b)", title_text or "", re.I):
         warranty_title = title_text
+
+    # 2. Look for the structured sidebar section (most reliable)
     warranty_heading = soup.find(lambda t: t.name in ['p', 'div', 'span'] and t.get_text(strip=True).lower() == 'warranty')
     if warranty_heading:
         detail_node = warranty_heading.find_next_sibling()
         if detail_node: warranty_specs = text_or_na(detail_node)
+
+    # 3. Look in the main specifications table (very specific selector to avoid other tables)
     for tr in soup.select("div.-pdp-add-info tr"):
         cells = tr.find_all("td")
         if len(cells) == 2:
             key = cells[0].get_text(strip=True).lower()
             val = cells[1].get_text(strip=True)
+            # Use found value only if we haven't found a better one already
             if "warranty" in key and "address" not in key and warranty_specs == "Not indicated": warranty_specs = val
             if "warranty address" in key and warranty_address == "Not indicated": warranty_address = val
+
+    # 4. Look for promotional badges (less reliable, but good fallback)
     if warranty_specs == "Not indicated":
         promo = soup.find(lambda t: t.name in ['p', 'span', 'div'] and re.search(r'\b\d+\s?(year|yr|month)s?\s+warranty\b', t.text, re.I))
         if promo: warranty_specs = text_or_na(promo)
+        
     return warranty_title, warranty_specs, warranty_address
 
 def parse_product(url: str):
-    # --- NEW STRATEGY: Fetch with JS first for complete data ---
+    # --- "JavaScript First" Strategy ---
     r = fetch_with_js(url)
+    # Fallback to simple fetch only if JS rendering fails completely
     if not r or not hasattr(r, 'html') or not r.html.html:
-        # Fallback to simple fetch if JS fails
         r = fetch_with_retry(url)
         if not r:
             return {col: "Error fetching page" for col in ["Product Title", "SKU", "Seller", "Price", "Warranty Title", "Warranty (Specs)", "Warranty Address"]} | {"Product URL": url}
