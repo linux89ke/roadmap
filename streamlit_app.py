@@ -184,17 +184,23 @@ def extract_basic_fields(soup: BeautifulSoup):
         if a:
             seller = text_or_na(a)
             
-    # -- NEW, MORE ROBUST FALLBACK ADDED HERE --
-    # This looks for the "Seller Information" box specifically.
-    if seller == "Not indicated":
+    # Final, most robust fallback for Seller
+    if seller == "Not indicated" or seller.lower() == 'follow':
         seller_header = soup.find(
             lambda tag: tag.name in ['h2', 'h3'] and 'seller information' in tag.get_text(strip=True).lower()
         )
         if seller_header:
-            # The seller's name is usually the first link right after this header
-            seller_link = seller_header.find_next("a")
-            if seller_link:
-                seller = text_or_na(seller_link)
+            # Find the parent container that holds the seller info
+            parent_box = seller_header.find_parent()
+            if parent_box:
+                # Find all links within that box
+                all_links = parent_box.find_all("a")
+                for link in all_links:
+                    link_text = text_or_na(link, default="")
+                    # The correct seller name won't be "Follow" and will be a meaningful name
+                    if "follow" not in link_text.lower() and len(link_text) > 2:
+                        seller = link_text
+                        break # Found the correct link, stop searching
 
     return name, price, sku, seller
 
