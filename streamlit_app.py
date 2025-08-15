@@ -56,12 +56,10 @@ def all_ldjson_objects(soup: BeautifulSoup):
     for s in soup.find_all("script", {"type": "application/ld+json"}):
         try:
             text = s.string or s.get_text()
-            if not text:
-                continue
+            if not text: continue
             data = json.loads(text)
             if isinstance(data, list):
-                for item in data:
-                    yield item
+                for item in data: yield item
             else:
                 yield data
         except Exception:
@@ -114,20 +112,17 @@ def get_product_links(category_url: str, base_url: str, status_placeholder):
         page_url = f"{category_url}{sep}page={page}"
         status_placeholder.text(f"Collecting links… page {page}")
         r = fetch_with_retry(page_url)
-        if not r:
-            break
+        if not r: break
         soup = BeautifulSoup(r.text, "lxml")
         found = parse_links_from_grid(soup, base_url) | parse_links_from_itemlist(soup)
-        if not found:
-            break
+        if not found: break
         all_links |= found
         page += 1
         time.sleep(random.uniform(*PAGE_SLEEP))
     return list(all_links)
 
 def text_or_na(node, default="Not indicated"):
-    if not node:
-        return default
+    if not node: return default
     if hasattr(node, "get_text"):
         t = node.get_text(" ", strip=True)
     else:
@@ -153,7 +148,7 @@ def extract_basic_fields(soup: BeautifulSoup, url: str):
             if isinstance(sel, dict):
                 seller = sel.get("name") or seller
 
-    # Fallbacks
+    # Fallbacks for basic info
     if name == "Not indicated":
         h1 = soup.select_one("h1")
         name = text_or_na(h1)
@@ -168,17 +163,17 @@ def extract_basic_fields(soup: BeautifulSoup, url: str):
             if re.search(r"\bSKU\b\s*:", txt, re.I):
                 sku = txt.split(":", 1)[-1].strip() or "Not indicated"
                 break
-
+    
+    # Primary fallbacks for Seller
     if seller == "Not indicated":
-        # Try HTML seller
         sold_by = soup.find(string=re.compile(r"Sold by", re.I))
         if sold_by and sold_by.parent:
             a = sold_by.parent.find_next("a")
             if a:
                 seller = text_or_na(a)
 
+    # JS-Render Fallback for lazy-loaded sellers
     if seller == "Not indicated":
-        # Try lazy-load via JS render
         r_js = fetch_with_js(url)
         if r_js:
             seller_node = r_js.html.find('[data-testid="seller-name"]', first=True)
@@ -186,6 +181,12 @@ def extract_basic_fields(soup: BeautifulSoup, url: str):
                 seller_text = seller_node.text.strip()
                 if seller_text and seller_text.lower() != "follow":
                     seller = seller_text
+    
+    # FINAL FALLBACK: Check if it's a Jumia Express item.
+    if seller == "Not indicated":
+        jumia_express_badge = soup.select_one('img[alt*="Jumia Express"]')
+        if jumia_express_badge:
+            seller = "Jumia"
 
     return name, price, sku, seller
 
@@ -200,8 +201,7 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
     for tr in soup.select("tr"):
         th = tr.find("th")
         td = tr.find("td")
-        if not th:
-            continue
+        if not th: continue
         key = th.get_text(" ", strip=True).lower()
         val = text_or_na(td)
         if "warranty address" in key and warranty_address == "Not indicated":
@@ -241,7 +241,7 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
 def parse_product(url: str):
     r = fetch_with_retry(url)
     if not r:
-        return {col: "Not indicated" for col in
+        return {col: "Error fetching page" for col in
                 ["Product Title", "SKU", "Seller", "Price", "Warranty Title", "Warranty (Specs)", "Warranty Address"]} | {"Product URL": url}
 
     soup = BeautifulSoup(r.text, "lxml")
@@ -263,7 +263,7 @@ def parse_product(url: str):
 # -----------------------------
 st.set_page_config(page_title="Warranty Scraper", layout="wide")
 st.title("Warranty Scraper 🌍")
-st.caption("Paste a category URL from any supported site.")
+st.caption("Paste a category URL from Jumia or other supported sites.")
 
 category_url = st.text_input("Enter category URL")
 go = st.button("Scrape Category")
