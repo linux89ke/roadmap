@@ -10,6 +10,7 @@ import time
 import random
 import subprocess
 import os
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # --- Playwright Imports ---
 from playwright.sync_api import sync_playwright
@@ -17,40 +18,48 @@ from playwright.sync_api import sync_playwright
 # -----------------------------
 # Auto-install Playwright browsers on Streamlit Cloud
 # -----------------------------
-# This block will run once when the app is deployed to install the browser.
 if "STREAMLIT_CLOUD" in os.environ:
     if not os.path.exists("/home/appuser/.cache/ms-playwright"):
         with st.spinner("Browser setup in progress, this may take a minute..."):
-            subprocess.run(["playwright", "install", "--with-deps"], check=True)
+            try:
+                subprocess.run(["playwright", "install", "--with-deps"], check=True)
+            except subprocess.CalledProcessError as e:
+                st.error(f"Failed to install Playwright browsers: {e}")
+                st.stop()
 
 # -----------------------------
 # Config
 # -----------------------------
 MAX_PAGES = 200
-MAX_WORKERS = 4 # Best for stability in cloud environments
+MAX_WORKERS = 4  # Best for stability in cloud environments
 PAGE_SLEEP = (0.4, 0.9)
 
 # -----------------------------
 # Fetching Helper (Using Playwright)
 # -----------------------------
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def fetch_with_playwright(url: str):
     """
     Uses Playwright to launch a headless browser, render the page's JavaScript,
     and return the final, complete HTML.
     """
     try:
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        ]
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            page = browser.new_page()
-            # Go to the page and wait for the network to be mostly idle
+            page = browser.new_page(user_agent=random.choice(user_agents))
             page.goto(url, wait_until="networkidle", timeout=60000)
-            # An extra wait for a common product grid element to be sure
-            page.wait_for_selector("article[class*='prd'], a[href$='.html']", timeout=20000)
+            # Broader selector to wait for product grid or links
+            page.wait_for_selector("article, div[class*='product'], a[href*='product'], section.products", timeout=30000)
             html_content = page.content()
             browser.close()
             return html_content
     except Exception as e:
-        print(f"Playwright failed for {url}: {e}")
+        st.error(f"Playwright failed for {url}: {e}")
         return None
 
 # -----------------------------
@@ -78,24 +87,35 @@ def find_product_objs_from_ldjson(soup: BeautifulSoup):
 def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
     """
     Uses a multi-strategy, context-aware approach to find product links,
-    making it resilient to website layout changes.
+    with broader fallbacks for resilience.
     """
     links = set()
-
-    # --- Definitive Strategy 1: Find the main product grid, then the links within ---
-    product_grid = soup.select_one("div[class*='-p-grid']")
+    
+    # Strategy 1: Main product grid
+    product_grid = soup.select_one("div[class*='-p-grid'], div.product-list, section.products, div[class*='products']")
     if product_grid:
-        product_cards = product_grid.find_all("article", recursive=False)
+        product_cards = product_grid.find_all("article", recursive=False) or product_grid.find_all("div", recursive=False)
         for card in product_cards:
             if link_tag := card.find("a", href=True):
-                links.add(urljoin(base_url, link_tag['href'].split("#")[0]))
-    if links: return list(links)
-
-    # --- Definitive Strategy 2: Broader fallback for different grid structures ---
-    for card in soup.select("article[class*='prd']"):
+                href = link_tag['href'].split("#")[0]
+                if "product" in href.lower() or href.endswith(".html"):  # Filter for product pages
+                    links.add(urljoin(base_url, href))
+        if links:
+            return list(links)
+    
+    # Strategy 2: Broader article or div-based search
+    for card in soup.select("article[class*='prd'], div[class*='product'], div[class*='item']"):
         if link_tag := card.find("a", href=True):
-            links.add(urljoin(base_url, link_tag['href'].split("#")[0]))
-    if links: return list(links)
+            href = link_tag['href'].split("#")[0]
+            if "product" in href.lower() or href.endswith(".html"):
+                links.add(urljoin(base_url, href))
+        if links:
+            return list(links)
+    
+    # Strategy 3: Generic link search with product pattern
+    for link_tag in soup.select("a[href*='product'], a[href$='.html']"):
+        href = link_tag['href'].split("#")[0]
+        links.add(urljoin(base_url, href))
     
     return list(links)
 
@@ -103,22 +123,36 @@ def get_product_links(category_url: str, base_url: str, status_placeholder):
     all_links = set()
     page = 1
     while page <= MAX_PAGES:
-        sep = "&" if "?" in category_url else "?"
-        page_url = f"{category_url}{sep}page={page}"
-        status_placeholder.text(f"Collecting links… page {page}")
-        
-        html_content = fetch_with_playwright(page_url)
-        if not html_content: break
+        # Try common pagination formats
+        pagination_formats = [
+            f"{category_url}{'' if category_url.endswith('/') else '/'}{'?page=' if '?' not in category_url else '&page='}{page}",
+            f"{category_url.rstrip('/')}/page/{page}/"
+        ]
+        page_url = pagination_formats[0]  # Default to ?page= format
+        for fmt in pagination_formats:
+            status_placeholder.text(f"Collecting links… page {page} ({fmt})")
+            html_content = fetch_with_playwright(fmt)
+            if html_content:
+                page_url = fmt
+                break
+        else:
+            st.error(f"Failed to fetch page {page} for all pagination formats.")
+            break
         
         soup = BeautifulSoup(html_content, "lxml")
         found_links = parse_links_from_grid(soup, base_url)
         
-        if not found_links: break
+        if not found_links:
+            st.warning(f"No product links found on page {page} ({page_url}). Stopping pagination.")
+            break
         
         new_links = set(found_links) - all_links
-        if not new_links: break # Stop if no new links are found on the page
+        if not new_links:
+            st.warning(f"No new links found on page {page} ({page_url}). Stopping pagination.")
+            break
         
         all_links.update(new_links)
+        status_placeholder.text(f"Found {len(new_links)} new links on page {page} (Total: {len(all_links)})")
         page += 1
         time.sleep(random.uniform(*PAGE_SLEEP))
         
@@ -187,20 +221,24 @@ def parse_product(url: str):
 st.set_page_config(page_title="Warranty Scraper", layout="wide")
 st.title("Definitive Warranty Scraper (Playwright Version) 🎭")
 st.caption("This version uses the Playwright browser engine for maximum accuracy. Paste a Jumia category URL.")
-category_url = st.text_input("Enter Jumia category URL")
+category_url = st.text_input("Enter Jumia category URL", value="https://www.jumia.co.ke/appliances-washers-dryers/")
 if go := st.button("Scrape Category"):
     try:
         parsed_url = urlparse(category_url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        if not all([parsed_url.scheme, parsed_url.netloc, "jumia" in base_url]): raise ValueError
-    except (ValueError, AttributeError):
-        st.error("Please enter a valid Jumia category URL."); st.stop()
+        if not all([parsed_url.scheme, parsed_url.netloc, "jumia" in base_url]) or "product" in parsed_url.path.lower():
+            raise ValueError("Invalid URL. Please enter a valid Jumia category URL (e.g., https://www.jumia.co.ke/electronics/).")
+    except (ValueError, AttributeError) as e:
+        st.error(str(e))
+        st.stop()
     st.subheader("Step 1 — Collecting product links")
     link_status = st.empty()
     with st.spinner("Collecting product links… This may take a moment."):
         links = get_product_links(category_url, base_url, link_status)
+    if not links:
+        st.error("No product URLs found. Please check the category URL or try again later.")
+        st.stop()
     st.success(f"Found {len(links)} product URLs.")
-    if not links: st.stop()
     st.subheader("Step 2 — Scraping product pages (using browser engine)")
     prog = st.progress(0.0)
     status = st.empty()
@@ -214,7 +252,7 @@ if go := st.button("Scrape Category"):
             status.text(f"Scraped {i + 1}/{total}")
     st.success("Scraping complete!")
     df = pd.DataFrame(results)
-    for col in ["Product Title","SKU","Seller","Price","Warranty Title","Warranty (Specs)","Warranty Address"]:
+    for col in ["Product Title", "SKU", "Seller", "Price", "Warranty Title", "Warranty (Specs)", "Warranty Address"]:
         df[col] = df[col].apply(lambda x: str(x).strip() if x and str(x).strip() else "Not indicated")
     st.dataframe(df, use_container_width=True)
     @st.cache_data
@@ -224,3 +262,4 @@ if go := st.button("Scrape Category"):
             frame.to_excel(writer, index=False, sheet_name="Products")
         return buf.getvalue()
     st.download_button("📥 Download Excel", to_excel_bytes(df), "jumia_products.xlsx")
+    st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")
