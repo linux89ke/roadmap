@@ -18,14 +18,27 @@ from playwright.sync_api import sync_playwright
 # -----------------------------
 # Auto-install Playwright browsers on Streamlit Cloud
 # -----------------------------
-if "STREAMLIT_CLOUD" in os.environ:
-    if not os.path.exists("/home/appuser/.cache/ms-playwright"):
-        with st.spinner("Browser setup in progress, this may take a minute..."):
-            try:
-                subprocess.run(["playwright", "install", "--with-deps"], check=True)
-            except subprocess.CalledProcessError as e:
-                st.error(f"Failed to install Playwright browsers: {e}")
-                st.stop()
+def install_playwright_browsers():
+    """Attempt to install Playwright browsers and dependencies."""
+    if "STREAMLIT_CLOUD" in os.environ:
+        if not os.path.exists("/home/appuser/.cache/ms-playwright"):
+            with st.spinner("Installing Playwright browsers, this may take a minute..."):
+                try:
+                    subprocess.run(["playwright", "install", "--with-deps"], check=True)
+                    st.success("Playwright browsers installed successfully.")
+                except subprocess.CalledProcessError as e:
+                    st.error(
+                        f"Failed to install Playwright browsers: {e}\n"
+                        "Please ensure your Streamlit Cloud environment has sufficient permissions and disk space. "
+                        "You may need to use a custom Dockerfile with pre-installed browsers. "
+                        "See https://playwright.dev/python/docs/browsers for details."
+                    )
+                    return False
+    return True
+
+# Run auto-installation on startup
+if not install_playwright_browsers():
+    st.stop()
 
 # -----------------------------
 # Config
@@ -53,7 +66,6 @@ def fetch_with_playwright(url: str):
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
             page = browser.new_page(user_agent=random.choice(user_agents))
             page.goto(url, wait_until="networkidle", timeout=60000)
-            # Broader selector to wait for product grid or links
             page.wait_for_selector("article, div[class*='product'], a[href*='product'], section.products", timeout=30000)
             html_content = page.content()
             browser.close()
@@ -123,12 +135,11 @@ def get_product_links(category_url: str, base_url: str, status_placeholder):
     all_links = set()
     page = 1
     while page <= MAX_PAGES:
-        # Try common pagination formats
         pagination_formats = [
             f"{category_url}{'' if category_url.endswith('/') else '/'}{'?page=' if '?' not in category_url else '&page='}{page}",
             f"{category_url.rstrip('/')}/page/{page}/"
         ]
-        page_url = pagination_formats[0]  # Default to ?page= format
+        page_url = pagination_formats[0]
         for fmt in pagination_formats:
             status_placeholder.text(f"Collecting links… page {page} ({fmt})")
             html_content = fetch_with_playwright(fmt)
@@ -221,6 +232,14 @@ def parse_product(url: str):
 st.set_page_config(page_title="Warranty Scraper", layout="wide")
 st.title("Definitive Warranty Scraper (Playwright Version) 🎭")
 st.caption("This version uses the Playwright browser engine for maximum accuracy. Paste a Jumia category URL.")
+
+# Manual browser installation button
+if st.button("Install Playwright Browsers"):
+    if install_playwright_browsers():
+        st.success("Browser installation completed. You can now scrape.")
+    else:
+        st.error("Browser installation failed. Check logs or use a custom Dockerfile.")
+
 category_url = st.text_input("Enter Jumia category URL", value="https://www.jumia.co.ke/appliances-washers-dryers/")
 if go := st.button("Scrape Category"):
     try:
@@ -236,7 +255,13 @@ if go := st.button("Scrape Category"):
     with st.spinner("Collecting product links… This may take a moment."):
         links = get_product_links(category_url, base_url, link_status)
     if not links:
-        st.error("No product URLs found. Please check the category URL or try again later.")
+        st.error(
+            "No product URLs found. Possible causes:\n"
+            "- The category URL may be incorrect or empty.\n"
+            "- Playwright browsers may not be installed correctly (try the 'Install Playwright Browsers' button).\n"
+            "- The website may have blocked the request (try running locally or with a proxy).\n"
+            "Please check the URL or try again later."
+        )
         st.stop()
     st.success(f"Found {len(links)} product URLs.")
     st.subheader("Step 2 — Scraping product pages (using browser engine)")
