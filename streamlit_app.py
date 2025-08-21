@@ -23,7 +23,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 ]
-EXCLUDED_SUBCATS = ["sp-", "mlp-", "cart", "account", "login", "signup", "help", "sell", "official-stores"]
+EXCLUDED_SUBCATS = ["sp-", "mlp-", "cart", "account", "login", "signup", "help", "sell", "official-stores", "flash-sale", "contact", "about"]
 
 # -----------------------------
 # Fetching Helper
@@ -86,13 +86,13 @@ def parse_data_layer(soup: BeautifulSoup):
 def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
     links = set()
     # Strategy 1: Main product grid
-    product_grid = soup.select_one("div[class*='-paxs'], div[class*='row'], section[class*='card'], div[class*='products'], div[class*='item']")
+    product_grid = soup.select_one("div[class*='-paxs'], div[class*='row'], section[class*='card'], div[class*='products'], div[class*='item'], div[class*='prd-grid']")
     if product_grid:
         product_cards = product_grid.find_all("article", recursive=False) or product_grid.find_all("div", recursive=False)
         for card in product_cards:
             if link_tag := card.find("a", href=True):
                 href = link_tag['href'].split("#")[0]
-                if href.endswith(".html") and not any(excl in href for excl in EXCLUDED_SUBCATS):
+                if href.endswith(".html") and not any(excl in href.lower() for excl in EXCLUDED_SUBCATS):
                     links.add(urljoin(base_url, href))
         if links:
             return list(links)
@@ -101,7 +101,7 @@ def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
     for card in soup.select("article[class*='prd'], div[class*='prd'], div[class*='item']"):
         if link_tag := card.find("a", href=True):
             href = link_tag['href'].split("#")[0]
-            if href.endswith(".html") and not any(excl in href for excl in EXCLUDED_SUBCATS):
+            if href.endswith(".html") and not any(excl in href.lower() for excl in EXCLUDED_SUBCATS):
                 links.add(urljoin(base_url, href))
         if links:
             return list(links)
@@ -109,7 +109,7 @@ def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
     # Strategy 3: Generic link search
     for link_tag in soup.select("a[href$='.html']"):
         href = link_tag['href'].split("#")[0]
-        if not any(excl in href for excl in EXCLUDED_SUBCATS):
+        if not any(excl in href.lower() for excl in EXCLUDED_SUBCATS):
             links.add(urljoin(base_url, href))
     
     return list(links)
@@ -120,12 +120,17 @@ def get_total_pages(soup: BeautifulSoup):
         if pagination:
             last_page = pagination.find_all("a")[-2].get_text(strip=True)  # Skip 'Next'
             if last_page.isdigit():
-                return int(last_page)
+                return min(int(last_page), MAX_PAGES)
         page_info = soup.find(lambda t: re.search(r'\b\d+\s*of\s*\d+\b', t.get_text()))
         if page_info:
             match = re.search(r'\b\d+\s*of\s*(\d+)\b', page_info.get_text())
             if match:
-                return int(match.group(1))
+                return min(int(match.group(1)), MAX_PAGES)
+        # Check for 'dataLayer' pagination info
+        data_layer = parse_data_layer(soup)
+        if data_layer.get("ecommerce", {}).get("impressions"):
+            total_items = len(data_layer["ecommerce"]["impressions"])
+            return min((total_items // 40) + 1, MAX_PAGES)  # Assume 40 items per page
         return MAX_PAGES
     except Exception:
         return MAX_PAGES
@@ -155,7 +160,8 @@ def get_product_links(category_url: str, base_url: str, status_placeholder, prox
             status_placeholder.text(f"Exploring subcategory: {subcat_url}")
             all_links.update(get_product_links(subcat_url, base_url, status_placeholder, proxy, depth + 1))
     
-    max_pages = min(get_total_pages(soup), MAX_PAGES)
+    max_pages = get_total_pages(soup)
+    status_placeholder.text(f"Detected {max_pages} pages for {category_url}")
     
     while page <= max_pages:
         pagination_formats = [
@@ -171,7 +177,7 @@ def get_product_links(category_url: str, base_url: str, status_placeholder, prox
                 page_url = fmt
                 break
         else:
-            st.warning(f"Failed to fetch page {page} for all pagination formats.")
+            st.warning(f"Failed to fetch page {page} for all pagination formats. Stopping pagination.")
             break
         
         soup = BeautifulSoup(html_content, "lxml")
@@ -310,9 +316,9 @@ def parse_product(url: str, proxy=None):
 # -----------------------------
 st.set_page_config(page_title="Jumia Warranty Scraper", layout="wide")
 st.title("Jumia Warranty Scraper")
-st.caption("Scrapes product details from Jumia category pages. Enter a category URL and optional proxy settings.")
+st.caption("Scrapes product details from any Jumia Kenya category page. Enter a category URL and optional proxy settings.")
 
-category_url = st.text_input("Enter Jumia category URL", value="https://www.jumia.co.ke/phones-tablets/")
+category_url = st.text_input("Enter Jumia category URL", value="https://www.jumia.co.ke/phones-tablets/", placeholder="e.g., https://www.jumia.co.ke/fashion/ or https://www.jumia.co.ke/baby-products/")
 proxy = st.text_input("Proxy (optional, format: http://user:pass@host:port)", placeholder="Leave blank for no proxy")
 debug_mode = st.checkbox("Enable Debug Mode (logs raw HTML for failed pages)")
 
@@ -320,8 +326,10 @@ if st.button("Scrape Category"):
     try:
         parsed_url = urlparse(category_url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        if not all([parsed_url.scheme, parsed_url.netloc, "jumia" in base_url]) or "product" in parsed_url.path.lower():
-            raise ValueError("Invalid URL. Please enter a valid Jumia category URL (e.g., https://www.jumia.co.ke/phones-tablets/).")
+        if not all([parsed_url.scheme, parsed_url.netloc, "jumia.co.ke" in base_url]) or "product" in parsed_url.path.lower():
+            raise ValueError("Invalid URL. Please enter a valid Jumia category URL (e.g., https://www.jumia.co.ke/electronics/).")
+        if any(excl in parsed_url.path.lower() for excl in EXCLUDED_SUBCATS):
+            raise ValueError(f"Invalid category URL. URLs containing {', '.join(EXCLUDED_SUBCATS)} are not supported.")
     except (ValueError, AttributeError) as e:
         st.error(str(e))
         st.stop()
