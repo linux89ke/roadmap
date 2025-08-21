@@ -267,4 +267,4 @@ if st.button("Scrape Category"):
     
     st.download_button("📥 Download Excel", to_excel_bytes(df), "jumia_products.xlsx")
     st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")
-```
+
