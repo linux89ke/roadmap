@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -304,5 +303,4 @@ if st.button("Scrape Category"):
     
     # CSV download as fallback
     st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")
-```
 
