@@ -407,7 +407,8 @@ if st.button("Scrape Category"):
     except ImportError:
         st.error("Excel download unavailable: xlsxwriter module not found. Using CSV download instead.")
     
-    st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")import streamlit as st
+    st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")
+import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
