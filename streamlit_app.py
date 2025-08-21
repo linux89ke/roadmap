@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -8,70 +9,39 @@ import json
 import re
 import time
 import random
-import subprocess
-import os
+import requests
+import cloudscraper
 from tenacity import retry, stop_after_attempt, wait_exponential
-
-# --- Playwright Imports ---
-from playwright.sync_api import sync_playwright
-
-# -----------------------------
-# Auto-install Playwright browsers on Streamlit Cloud
-# -----------------------------
-def install_playwright_browsers():
-    """Attempt to install Playwright browsers and dependencies."""
-    if "STREAMLIT_CLOUD" in os.environ:
-        if not os.path.exists("/home/appuser/.cache/ms-playwright"):
-            with st.spinner("Installing Playwright browsers, this may take a minute..."):
-                try:
-                    subprocess.run(["playwright", "install", "--with-deps"], check=True)
-                    st.success("Playwright browsers installed successfully.")
-                except subprocess.CalledProcessError as e:
-                    st.error(
-                        f"Failed to install Playwright browsers: {e}\n"
-                        "Please ensure your Streamlit Cloud environment has sufficient permissions and disk space. "
-                        "You may need to use a custom Dockerfile with pre-installed browsers. "
-                        "See https://playwright.dev/python/docs/browsers for details."
-                    )
-                    return False
-    return True
-
-# Run auto-installation on startup
-if not install_playwright_browsers():
-    st.stop()
 
 # -----------------------------
 # Config
 # -----------------------------
-MAX_PAGES = 200
-MAX_WORKERS = 4  # Best for stability in cloud environments
-PAGE_SLEEP = (0.4, 0.9)
+MAX_PAGES = 50  # Reduced for testing; adjust as needed
+MAX_WORKERS = 4  # Balanced for cloud environments
+PAGE_SLEEP = (1.0, 2.0)  # Delay to avoid bot detection
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+]
 
 # -----------------------------
-# Fetching Helper (Using Playwright)
+# Fetching Helper
 # -----------------------------
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def fetch_with_playwright(url: str):
+def fetch_page(url: str, proxy=None):
     """
-    Uses Playwright to launch a headless browser, render the page's JavaScript,
-    and return the final, complete HTML.
+    Fetches HTML content using cloudscraper to handle bot protection.
     """
     try:
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        ]
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            page = browser.new_page(user_agent=random.choice(user_agents))
-            page.goto(url, wait_until="networkidle", timeout=60000)
-            page.wait_for_selector("article, div[class*='product'], a[href*='product'], section.products", timeout=30000)
-            html_content = page.content()
-            browser.close()
-            return html_content
+        scraper = cloudscraper.create_scraper()
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        response = scraper.get(url, headers=headers, proxies=proxies, timeout=30)
+        response.raise_for_status()
+        return response.text
     except Exception as e:
-        st.error(f"Playwright failed for {url}: {e}")
+        st.error(f"Failed to fetch {url}: {e}")
         return None
 
 # -----------------------------
@@ -98,19 +68,18 @@ def find_product_objs_from_ldjson(soup: BeautifulSoup):
 
 def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
     """
-    Uses a multi-strategy, context-aware approach to find product links,
-    with broader fallbacks for resilience.
+    Extracts product links using multiple strategies for resilience.
     """
     links = set()
     
     # Strategy 1: Main product grid
-    product_grid = soup.select_one("div[class*='-p-grid'], div.product-list, section.products, div[class*='products']")
+    product_grid = soup.select_one("div[class*='-p-grid'], div.product-list, section.products, div[class*='products'], div[class*='item']")
     if product_grid:
         product_cards = product_grid.find_all("article", recursive=False) or product_grid.find_all("div", recursive=False)
         for card in product_cards:
             if link_tag := card.find("a", href=True):
                 href = link_tag['href'].split("#")[0]
-                if "product" in href.lower() or href.endswith(".html"):  # Filter for product pages
+                if "product" in href.lower() or href.endswith(".html"):
                     links.add(urljoin(base_url, href))
         if links:
             return list(links)
@@ -124,14 +93,14 @@ def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
         if links:
             return list(links)
     
-    # Strategy 3: Generic link search with product pattern
+    # Strategy 3: Generic link search
     for link_tag in soup.select("a[href*='product'], a[href$='.html']"):
         href = link_tag['href'].split("#")[0]
         links.add(urljoin(base_url, href))
     
     return list(links)
 
-def get_product_links(category_url: str, base_url: str, status_placeholder):
+def get_product_links(category_url: str, base_url: str, status_placeholder, proxy=None):
     all_links = set()
     page = 1
     while page <= MAX_PAGES:
@@ -142,7 +111,7 @@ def get_product_links(category_url: str, base_url: str, status_placeholder):
         page_url = pagination_formats[0]
         for fmt in pagination_formats:
             status_placeholder.text(f"Collecting links… page {page} ({fmt})")
-            html_content = fetch_with_playwright(fmt)
+            html_content = fetch_page(fmt, proxy)
             if html_content:
                 page_url = fmt
                 break
@@ -212,8 +181,8 @@ def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
         warranty_specs = text_or_na(promo)
     return warranty_title, warranty_specs, warranty_address
 
-def parse_product(url: str):
-    html_content = fetch_with_playwright(url)
+def parse_product(url: str, proxy=None):
+    html_content = fetch_page(url, proxy)
     if not html_content:
         return {col: "Error fetching page" for col in ["Product Title", "SKU", "Seller", "Price", "Warranty Title", "Warranty (Specs)", "Warranty Address"]} | {"Product URL": url}
     soup = BeautifulSoup(html_content, "lxml")
@@ -230,18 +199,14 @@ def parse_product(url: str):
 # Streamlit UI
 # -----------------------------
 st.set_page_config(page_title="Warranty Scraper", layout="wide")
-st.title("Definitive Warranty Scraper (Playwright Version) 🎭")
-st.caption("This version uses the Playwright browser engine for maximum accuracy. Paste a Jumia category URL.")
-
-# Manual browser installation button
-if st.button("Install Playwright Browsers"):
-    if install_playwright_browsers():
-        st.success("Browser installation completed. You can now scrape.")
-    else:
-        st.error("Browser installation failed. Check logs or use a custom Dockerfile.")
+st.title("Jumia Warranty Scraper")
+st.caption("Scrapes product details from Jumia category pages. Enter a category URL and optional proxy settings.")
 
 category_url = st.text_input("Enter Jumia category URL", value="https://www.jumia.co.ke/appliances-washers-dryers/")
-if go := st.button("Scrape Category"):
+proxy = st.text_input("Proxy (optional, format: http://user:pass@host:port)", placeholder="Leave blank for no proxy")
+debug_mode = st.checkbox("Enable Debug Mode (logs raw HTML for failed pages)")
+
+if st.button("Scrape Category"):
     try:
         parsed_url = urlparse(category_url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
@@ -250,41 +215,57 @@ if go := st.button("Scrape Category"):
     except (ValueError, AttributeError) as e:
         st.error(str(e))
         st.stop()
+
     st.subheader("Step 1 — Collecting product links")
     link_status = st.empty()
     with st.spinner("Collecting product links… This may take a moment."):
-        links = get_product_links(category_url, base_url, link_status)
+        links = get_product_links(category_url, base_url, link_status, proxy)
+    
     if not links:
         st.error(
             "No product URLs found. Possible causes:\n"
             "- The category URL may be incorrect or empty.\n"
-            "- Playwright browsers may not be installed correctly (try the 'Install Playwright Browsers' button).\n"
-            "- The website may have blocked the request (try running locally or with a proxy).\n"
+            "- The website may have blocked the request (try using a proxy or running locally).\n"
+            "- The HTML structure may have changed (enable Debug Mode to inspect HTML).\n"
             "Please check the URL or try again later."
         )
+        if debug_mode:
+            html_content = fetch_page(category_url, proxy)
+            if html_content:
+                st.text_area("Debug: Raw HTML", html_content[:5000], height=300)
         st.stop()
+    
     st.success(f"Found {len(links)} product URLs.")
-    st.subheader("Step 2 — Scraping product pages (using browser engine)")
+    st.subheader("Step 2 — Scraping product pages")
     prog = st.progress(0.0)
     status = st.empty()
     results = []
     total = len(links)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = {ex.submit(parse_product, u): u for u in links}
+        futures = {ex.submit(parse_product, u, proxy): u for u in links}
         for i, fut in enumerate(as_completed(futures)):
-            results.append(fut.result())
+            result = fut.result()
+            results.append(result)
             prog.progress((i + 1) / total)
             status.text(f"Scraped {i + 1}/{total}")
+            if debug_mode and "Error fetching page" in result.values():
+                html_content = fetch_page(result["Product URL"], proxy)
+                if html_content:
+                    st.text_area(f"Debug: Raw HTML for {result['Product URL']}", html_content[:5000], height=300)
+    
     st.success("Scraping complete!")
     df = pd.DataFrame(results)
     for col in ["Product Title", "SKU", "Seller", "Price", "Warranty Title", "Warranty (Specs)", "Warranty Address"]:
         df[col] = df[col].apply(lambda x: str(x).strip() if x and str(x).strip() else "Not indicated")
     st.dataframe(df, use_container_width=True)
+    
     @st.cache_data
     def to_excel_bytes(frame: pd.DataFrame) -> bytes:
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
             frame.to_excel(writer, index=False, sheet_name="Products")
         return buf.getvalue()
+    
     st.download_button("📥 Download Excel", to_excel_bytes(df), "jumia_products.xlsx")
     st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")
+```
