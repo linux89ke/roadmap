@@ -23,18 +23,18 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 ]
-EXCLUDED_SUBCATS = ["sp-", "cart", "account", "login", "signup", "help", "sell"]
+EXCLUDED_SUBCATS = ["sp-", "mlp-", "cart", "account", "login", "signup", "help", "sell", "official-stores"]
 
 # -----------------------------
 # Fetching Helper
 # -----------------------------
-@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=2, max=15))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def fetch_page(url: str, proxy=None):
     try:
         scraper = cloudscraper.create_scraper()
         headers = {"User-Agent": random.choice(USER_AGENTS)}
         proxies = {"http": proxy, "https": proxy} if proxy else None
-        response = scraper.get(url, headers=headers, proxies=proxies, timeout=30)
+        response = scraper.get(url, headers=headers, proxies=proxies, timeout=20)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -86,30 +86,31 @@ def parse_data_layer(soup: BeautifulSoup):
 def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
     links = set()
     # Strategy 1: Main product grid
-    product_grid = soup.select_one("div[class*='-p-grid'], div.product-list, section.products, div[class*='products'], div[class*='item']")
+    product_grid = soup.select_one("div[class*='-paxs'], div[class*='row'], section[class*='card'], div[class*='products'], div[class*='item']")
     if product_grid:
         product_cards = product_grid.find_all("article", recursive=False) or product_grid.find_all("div", recursive=False)
         for card in product_cards:
             if link_tag := card.find("a", href=True):
                 href = link_tag['href'].split("#")[0]
-                if "product" in href.lower() or href.endswith(".html"):
+                if href.endswith(".html") and not any(excl in href for excl in EXCLUDED_SUBCATS):
                     links.add(urljoin(base_url, href))
         if links:
             return list(links)
     
     # Strategy 2: Broader article or div-based search
-    for card in soup.select("article[class*='prd'], div[class*='product'], div[class*='item']"):
+    for card in soup.select("article[class*='prd'], div[class*='prd'], div[class*='item']"):
         if link_tag := card.find("a", href=True):
             href = link_tag['href'].split("#")[0]
-            if "product" in href.lower() or href.endswith(".html"):
+            if href.endswith(".html") and not any(excl in href for excl in EXCLUDED_SUBCATS):
                 links.add(urljoin(base_url, href))
         if links:
             return list(links)
     
     # Strategy 3: Generic link search
-    for link_tag in soup.select("a[href*='product'], a[href$='.html']"):
+    for link_tag in soup.select("a[href$='.html']"):
         href = link_tag['href'].split("#")[0]
-        links.add(urljoin(base_url, href))
+        if not any(excl in href for excl in EXCLUDED_SUBCATS):
+            links.add(urljoin(base_url, href))
     
     return list(links)
 
@@ -117,12 +118,12 @@ def get_total_pages(soup: BeautifulSoup):
     try:
         pagination = soup.select_one("nav.pagination, div.pagination, ul.pagination")
         if pagination:
-            last_page = pagination.find_all("a")[-1].get_text(strip=True)
+            last_page = pagination.find_all("a")[-2].get_text(strip=True)  # Skip 'Next'
             if last_page.isdigit():
                 return int(last_page)
-        page_info = soup.find(lambda t: re.search(r'\b\d+\s*/\s*\d+\b', t.get_text()))
+        page_info = soup.find(lambda t: re.search(r'\b\d+\s*of\s*\d+\b', t.get_text()))
         if page_info:
-            match = re.search(r'\b\d+\s*/\s*(\d+)\b', page_info.get_text())
+            match = re.search(r'\b\d+\s*of\s*(\d+)\b', page_info.get_text())
             if match:
                 return int(match.group(1))
         return MAX_PAGES
@@ -130,7 +131,7 @@ def get_total_pages(soup: BeautifulSoup):
         return MAX_PAGES
 
 def get_product_links(category_url: str, base_url: str, status_placeholder, proxy=None, depth=0):
-    if depth > 1:  # Limit recursion depth
+    if depth > 1:
         status_placeholder.text(f"Skipping {category_url}: Maximum subcategory depth reached.")
         return set()
     
@@ -162,6 +163,7 @@ def get_product_links(category_url: str, base_url: str, status_placeholder, prox
             f"{category_url.rstrip('/')}/page/{page}/"
         ]
         page_url = pagination_formats[0]
+        html_content = None
         for fmt in pagination_formats:
             status_placeholder.text(f"Collecting links… page {page} ({fmt})")
             html_content = fetch_page(fmt, proxy)
@@ -169,19 +171,19 @@ def get_product_links(category_url: str, base_url: str, status_placeholder, prox
                 page_url = fmt
                 break
         else:
-            st.error(f"Failed to fetch page {page} for all pagination formats.")
+            st.warning(f"Failed to fetch page {page} for all pagination formats.")
             break
         
         soup = BeautifulSoup(html_content, "lxml")
         found_links = parse_links_from_grid(soup, base_url)
         
         if not found_links:
-            st.warning(f"No product links found on page {page} ({page_url}).")
+            st.warning(f"No product links found on page {page} ({page_url}). Stopping pagination.")
             break
         
         new_links = set(found_links) - all_links
-        if not new_links:
-            st.warning(f"No new links found on page {page} ({page_url}).")
+        if not new_links and page > 1:
+            st.warning(f"No new links found on page {page} ({page_url}). Stopping pagination.")
             break
         
         all_links.update(new_links)
@@ -218,7 +220,7 @@ def extract_basic_fields(soup: BeautifulSoup):
         name = product.get("name", name)
         sku = product.get("id", sku)
         price = product.get("price", price)
-        seller = data_layer.get("dimension23", seller)  # Seller ID, may need mapping
+        seller = data_layer.get("dimension23", seller)
     
     # Try ld+json
     products = find_product_objs_from_ldjson(soup)
@@ -310,7 +312,7 @@ st.set_page_config(page_title="Jumia Warranty Scraper", layout="wide")
 st.title("Jumia Warranty Scraper")
 st.caption("Scrapes product details from Jumia category pages. Enter a category URL and optional proxy settings.")
 
-category_url = st.text_input("Enter Jumia category URL", value="https://www.jumia.co.ke/appliances-washers-dryers/")
+category_url = st.text_input("Enter Jumia category URL", value="https://www.jumia.co.ke/phones-tablets/")
 proxy = st.text_input("Proxy (optional, format: http://user:pass@host:port)", placeholder="Leave blank for no proxy")
 debug_mode = st.checkbox("Enable Debug Mode (logs raw HTML for failed pages)")
 
@@ -319,7 +321,7 @@ if st.button("Scrape Category"):
         parsed_url = urlparse(category_url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
         if not all([parsed_url.scheme, parsed_url.netloc, "jumia" in base_url]) or "product" in parsed_url.path.lower():
-            raise ValueError("Invalid URL. Please enter a valid Jumia category URL (e.g., https://www.jumia.co.ke/electronics/).")
+            raise ValueError("Invalid URL. Please enter a valid Jumia category URL (e.g., https://www.jumia.co.ke/phones-tablets/).")
     except (ValueError, AttributeError) as e:
         st.error(str(e))
         st.stop()
