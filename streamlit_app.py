@@ -1,4 +1,4 @@
-```python
+
 import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -333,4 +333,3 @@ if st.button("Scrape Category"):
         st.error("Excel download unavailable: xlsxwriter module not found. Please ensure xlsxwriter is installed. Using CSV download instead.")
     
     st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")
-```
