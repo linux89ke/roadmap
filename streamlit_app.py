@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -36,7 +37,7 @@ def fetch_page(url: str, proxy=None):
         scraper = cloudscraper.create_scraper()
         headers = {"User-Agent": random.choice(USER_AGENTS)}
         proxies = {"http": proxy, "https": proxy} if proxy else None
-        response = scraper.get(url, headers=headers, proxies=proxies, timeout=60)  # Increased timeout
+        response = scraper.get(url, headers=headers, proxies=proxies, timeout=60)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -109,7 +110,6 @@ def get_total_pages(soup: BeautifulSoup):
             last_page = pagination.find_all("a")[-1].get_text(strip=True)
             if last_page.isdigit():
                 return int(last_page)
-        # Fallback: Look for '1 / 21' style text
         page_info = soup.find(lambda t: re.search(r'\b\d+\s*/\s*\d+\b', t.get_text()))
         if page_info:
             match = re.search(r'\b\d+\s*/\s*(\d+)\b', page_info.get_text())
@@ -123,7 +123,6 @@ def get_product_links(category_url: str, base_url: str, status_placeholder, prox
     all_links = set()
     page = 1
     
-    # Fetch first page to determine total pages
     html_content = fetch_page(category_url, proxy)
     if not html_content:
         st.error("Failed to fetch the first page. Check the URL or proxy settings.")
@@ -178,36 +177,69 @@ def text_or_na(node, default="Not indicated"):
 def extract_basic_fields(soup: BeautifulSoup):
     name, price, sku, seller = "Not indicated", "Not indicated", "Not indicated", "Not indicated"
     main_content = soup.find("main", {"role": "main"}) or soup
+    
+    # Try ld+json first
     products = find_product_objs_from_ldjson(soup)
     if products:
         p = products[0]
-        name, sku = p.get("name", name), p.get("sku", sku)
+        name = p.get("name", name)
+        sku = p.get("sku", sku)
         if isinstance(p.get("offers"), dict):
             price = p["offers"].get("price", price)
-            if isinstance(p["offers"].get("seller"), dict): seller = p["offers"]["seller"].get("name", seller)
-    if name == "Not indicated": name = text_or_na(main_content.select_one("h1"))
-    if price == "Not indicated": price = text_or_na(main_content.select_one("span.-b"))
+            if isinstance(p["offers"].get("seller"), dict):
+                seller = p["offers"]["seller"].get("name", seller)
+    
+    # Fallback to HTML parsing
+    if name == "Not indicated":
+        name = text_or_na(main_content.select_one("h1"))
+    if price == "Not indicated":
+        price = text_or_na(main_content.select_one("span.-b, span.price, div.price"))
     if seller == "Not indicated":
-        seller_header = main_content.find(lambda t: t.name in ['h2', 'h3'] and 'seller information' in t.text.lower())
-        if seller_header and (content_area := seller_header.find_next_sibling()):
-            node = content_area.find("a") or content_area.find(['p', 'div', 'h3'])
-            if node and "follow" not in (seller_text := text_or_na(node)).lower(): seller = seller_text
-    if seller == "Not indicated" and main_content.select_one('img[alt*="Jumia Express"]'): seller = "Jumia"
+        # Broader seller selectors
+        seller_node = main_content.select_one("div.seller-info, div.-seller, p.seller-name, a.seller-link, div.seller-details")
+        if seller_node:
+            seller_text = text_or_na(seller_node)
+            if "follow" not in seller_text.lower():
+                seller = seller_text
+        else:
+            # Check for seller in other elements
+            for node in main_content.select("p, div, span"):
+                text = node.get_text(strip=True).lower()
+                if "seller" in text and not any(x in text for x in ["follow", "rating", "score"]):
+                    seller = text_or_na(node)
+                    break
+    if seller == "Not indicated" and main_content.select_one('img[alt*="Jumia Express"]'):
+        seller = "Jumia"
+    
     return name, price, sku, seller
 
 def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
     warranty_title, warranty_specs, warranty_address = "Not indicated", "Not indicated", "Not indicated"
     main_content = soup.find("main", {"role": "main"}) or soup
-    if re.search(r"(warranty|\b\d+\s?yr)", title_text or "", re.I): warranty_title = title_text
-    warranty_heading = main_content.find(lambda t: t.name in ['p', 'div', 'span'] and t.get_text(strip=True).lower() == 'warranty')
-    if warranty_heading and (detail_node := warranty_heading.find_next_sibling()): warranty_specs = text_or_na(detail_node)
+    
+    if re.search(r"(warranty|\b\d+\s?yr)", title_text or "", re.I):
+        warranty_title = title_text
+    
+    warranty_heading = main_content.find(lambda t: t.name in ['p', 'div', 'span'] and 'warranty' in t.get_text(strip=True).lower())
+    if warranty_heading and (detail_node := warranty_heading.find_next_sibling()):
+        warranty_specs = text_or_na(detail_node)
+    
     if warranty_specs == "Not indicated":
-        for tr in main_content.select("div.-pdp-add-info tr"):
+        for tr in main_content.select("div.-pdp-add-info tr, table.specifications tr"):
             cells = tr.find_all("td")
             if len(cells) == 2 and "warranty" in cells[0].get_text(strip=True).lower():
-                warranty_specs = cells[1].get_text(strip=True); break
-    if warranty_specs == "Not indicated" and (promo := main_content.find(lambda t: re.search(r'\b\d+\s?year.warranty\b', t.text, re.I))):
-        warranty_specs = text_or_na(promo)
+                warranty_specs = cells[1].get_text(strip=True)
+                break
+    
+    if warranty_specs == "Not indicated":
+        promo = main_content.find(lambda t: re.search(r'\b\d+\s?year.warranty\b', t.text, re.I))
+        if promo:
+            warranty_specs = text_or_na(promo)
+    
+    warranty_address_node = main_content.find(lambda t: t.name in ['p', 'div', 'span'] and 'warranty address' in t.get_text(strip=True).lower())
+    if warranty_address_node:
+        warranty_address = text_or_na(warranty_address_node.find_next_sibling() or warranty_address_node)
+    
     return warranty_title, warranty_specs, warranty_address
 
 def parse_product(url: str, proxy=None):
@@ -288,7 +320,6 @@ if st.button("Scrape Category"):
         df[col] = df[col].apply(lambda x: str(x).strip() if x and str(x).strip() else "Not indicated")
     st.dataframe(df, use_container_width=True)
     
-    # Excel download with error handling
     try:
         import xlsxwriter
         @st.cache_data
@@ -301,6 +332,5 @@ if st.button("Scrape Category"):
     except ImportError:
         st.error("Excel download unavailable: xlsxwriter module not found. Please ensure xlsxwriter is installed. Using CSV download instead.")
     
-    # CSV download as fallback
     st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")
-
+```
