@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -15,7 +16,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 # -----------------------------
 # Config
 # -----------------------------
-MAX_PAGES = 50  # Reduced for testing; adjust as needed
+MAX_PAGES = 50  # Maximum pages to try
 MAX_WORKERS = 4  # Balanced for cloud environments
 PAGE_SLEEP = (1.0, 2.0)  # Delay to avoid bot detection
 USER_AGENTS = [
@@ -27,7 +28,7 @@ USER_AGENTS = [
 # -----------------------------
 # Fetching Helper
 # -----------------------------
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=2, max=15))
 def fetch_page(url: str, proxy=None):
     """
     Fetches HTML content using cloudscraper to handle bot protection.
@@ -36,7 +37,7 @@ def fetch_page(url: str, proxy=None):
         scraper = cloudscraper.create_scraper()
         headers = {"User-Agent": random.choice(USER_AGENTS)}
         proxies = {"http": proxy, "https": proxy} if proxy else None
-        response = scraper.get(url, headers=headers, proxies=proxies, timeout=30)
+        response = scraper.get(url, headers=headers, proxies=proxies, timeout=60)  # Increased timeout
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -99,10 +100,40 @@ def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
     
     return list(links)
 
+def get_total_pages(soup: BeautifulSoup):
+    """
+    Attempts to find the total number of pages from pagination elements.
+    """
+    try:
+        pagination = soup.select_one("nav.pagination, div.pagination, ul.pagination")
+        if pagination:
+            last_page = pagination.find_all("a")[-1].get_text(strip=True)
+            if last_page.isdigit():
+                return int(last_page)
+        # Fallback: Look for '1 / 21' style text
+        page_info = soup.find(lambda t: re.search(r'\b\d+\s*/\s*\d+\b', t.get_text()))
+        if page_info:
+            match = re.search(r'\b\d+\s*/\s*(\d+)\b', page_info.get_text())
+            if match:
+                return int(match.group(1))
+        return MAX_PAGES
+    except Exception:
+        return MAX_PAGES
+
 def get_product_links(category_url: str, base_url: str, status_placeholder, proxy=None):
     all_links = set()
     page = 1
-    while page <= MAX_PAGES:
+    
+    # Fetch first page to determine total pages
+    html_content = fetch_page(category_url, proxy)
+    if not html_content:
+        st.error("Failed to fetch the first page. Check the URL or proxy settings.")
+        return []
+    
+    soup = BeautifulSoup(html_content, "lxml")
+    max_pages = min(get_total_pages(soup), MAX_PAGES)
+    
+    while page <= max_pages:
         pagination_formats = [
             f"{category_url}{'' if category_url.endswith('/') else '/'}{'?page=' if '?' not in category_url else '&page='}{page}",
             f"{category_url.rstrip('/')}/page/{page}/"
@@ -197,7 +228,7 @@ def parse_product(url: str, proxy=None):
 # -----------------------------
 # Streamlit UI
 # -----------------------------
-st.set_page_config(page_title="Warranty Scraper", layout="wide")
+st.set_page_config(page_title="Jumia Warranty Scraper", layout="wide")
 st.title("Jumia Warranty Scraper")
 st.caption("Scrapes product details from Jumia category pages. Enter a category URL and optional proxy settings.")
 
@@ -258,13 +289,20 @@ if st.button("Scrape Category"):
         df[col] = df[col].apply(lambda x: str(x).strip() if x and str(x).strip() else "Not indicated")
     st.dataframe(df, use_container_width=True)
     
-    @st.cache_data
-    def to_excel_bytes(frame: pd.DataFrame) -> bytes:
-        buf = BytesIO()
-        with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-            frame.to_excel(writer, index=False, sheet_name="Products")
-        return buf.getvalue()
+    # Excel download with error handling
+    try:
+        import xlsxwriter
+        @st.cache_data
+        def to_excel_bytes(frame: pd.DataFrame) -> bytes:
+            buf = BytesIO()
+            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                frame.to_excel(writer, index=False, sheet_name="Products")
+            return buf.getvalue()
+        st.download_button("📥 Download Excel", to_excel_bytes(df), "jumia_products.xlsx")
+    except ImportError:
+        st.error("Excel download unavailable: xlsxwriter module not found. Please ensure xlsxwriter is installed. Using CSV download instead.")
     
-    st.download_button("📥 Download Excel", to_excel_bytes(df), "jumia_products.xlsx")
+    # CSV download as fallback
     st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")
+```
 
