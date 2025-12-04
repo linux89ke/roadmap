@@ -27,7 +27,7 @@ TEMPLATE_DATA = {
 @st.cache_data
 def load_category_data():
     """
-    Loads category data and extracts 'Root Categories' for easier filtering.
+    Loads category data efficiently.
     """
     df = pd.DataFrame()
     
@@ -44,17 +44,11 @@ def load_category_data():
 
     if not df.empty:
         # 1. Clean Data
-        df['name'] = df['name'].str.strip()
-        if 'category' in df.columns:
-            df['category'] = df['category'].str.strip()
-        else:
-            return pd.DataFrame(), {}, [], []
-
-        if 'categories' in df.columns:
-            df['categories'] = df['categories'].str.strip()
+        if 'name' in df.columns: df['name'] = df['name'].str.strip()
+        if 'category' in df.columns: df['category'] = df['category'].str.strip()
+        if 'categories' in df.columns: df['categories'] = df['categories'].str.strip()
 
         # 2. Extract Root Category (e.g. "Computing" from "Computing\Accessories")
-        # We split by the backslash '\' and take the first part
         def get_root(path):
             if pd.isna(path): return "Other"
             parts = str(path).split('\\')
@@ -135,40 +129,76 @@ if 'products' not in st.session_state:
 # --- LOAD DATA ---
 cat_df, path_to_code, root_list = load_category_data()
 
-# --- INPUT FORM ---
-st.header("1. Enter New Product Details")
+# --- 1. CATEGORY SELECTION (Outside Form for Interactivity) ---
+st.header("1. Find Category")
+st.info("Select your category below. This will be applied to the product you enter next.")
+
+# Two tabs for different search methods
+tab1, tab2 = st.tabs(["📂 Browse by Department", "🔍 Global Search"])
+
+selected_category_path = DEFAULT_CATEGORY_PATH
+
+# --- METHOD A: DEPARTMENT FILTER ---
+with tab1:
+    col_dept, col_cat = st.columns([1, 2])
+    
+    with col_dept:
+        # Filter 1: Department
+        selected_root = st.selectbox("Step A: Choose Department", options=["Select Department"] + root_list)
+    
+    with col_cat:
+        # Filter 2: Specific Category (Filtered by Dept)
+        if selected_root and selected_root != "Select Department":
+            # Show only categories inside the chosen root
+            filtered_paths = cat_df[cat_df['root_category'] == selected_root]['category'].dropna().unique().tolist()
+            filtered_paths = sorted(filtered_paths)
+            
+            # This is the "Scrollable Dropdown" + "Search within Dept"
+            cat_selection_a = st.selectbox("Step B: Select Specific Category", options=[DEFAULT_CATEGORY_PATH] + filtered_paths)
+            
+            if cat_selection_a != DEFAULT_CATEGORY_PATH:
+                selected_category_path = cat_selection_a
+        else:
+            st.selectbox("Step B: Select Specific Category", options=["First select a department"], disabled=True)
+
+# --- METHOD B: GLOBAL SEARCH ---
+with tab2:
+    search_query = st.text_input("Type a keyword to find any category (e.g. 'HDMI', 'Baby', 'Dress')")
+    
+    if search_query:
+        # Search anywhere in the category path
+        search_results = cat_df[cat_df['category'].str.contains(search_query, case=False, na=False)]
+        found_paths = sorted(search_results['category'].unique().tolist())
+        
+        if found_paths:
+            cat_selection_b = st.selectbox(f"Found {len(found_paths)} results:", options=[DEFAULT_CATEGORY_PATH] + found_paths)
+            if cat_selection_b != DEFAULT_CATEGORY_PATH:
+                selected_category_path = cat_selection_b
+        else:
+            st.warning("No categories found matching that keyword.")
+    else:
+        st.caption("Start typing above to see results...")
+
+
+# Display Selected Category Confirmation
+if selected_category_path != DEFAULT_CATEGORY_PATH:
+    final_code = path_to_code.get(selected_category_path, '')
+    st.success(f"✅ Selected: **{selected_category_path}** (Code: {final_code})")
+else:
+    st.warning("⚠️ Please select a category above before adding a product.")
+    final_code = ""
+
+
+# --- 2. PRODUCT DETAILS FORM ---
+st.markdown("---")
+st.header("2. Product Details")
+
 with st.form(key='product_form'):
     col_name, col_brand = st.columns([3, 1])
     with col_name:
         new_name = st.text_input("Product Name", placeholder="e.g., 10PCS Refrigerator Bags")
     with col_brand:
         new_brand = st.text_input("Brand", value=DEFAULT_BRAND)
-
-    # --- NEW: DEPARTMENT FILTER ---
-    st.subheader("Category Selection")
-    
-    # Step 1: Filter by Department
-    col_filter, col_select = st.columns([1, 2])
-    
-    with col_filter:
-        # Add "All Departments" as the default first option
-        filter_options = ["All Departments"] + root_list
-        selected_root = st.selectbox("1. Filter by Department", options=filter_options)
-    
-    with col_select:
-        # Filter the main list based on Step 1
-        if selected_root == "All Departments":
-            filtered_paths = cat_df['category'].dropna().unique().tolist()
-        else:
-            filtered_paths = cat_df[cat_df['root_category'] == selected_root]['category'].dropna().unique().tolist()
-        
-        # Add default option
-        final_options = [DEFAULT_CATEGORY_PATH] + sorted(filtered_paths)
-        
-        # Step 2: The actual selection
-        selected_category_path = st.selectbox("2. Select Specific Category", options=final_options)
-
-    # -------------------------------
 
     st.subheader("Optional Attributes")
     col_color, col_material = st.columns(2)
@@ -180,19 +210,18 @@ with st.form(key='product_form'):
     st.markdown("---")
     new_description = st.text_area("Full Description")
     new_short_description_raw = st.text_area("Short Description (Highlights)", height=150)
-    st.markdown("---")
     
     submit_button = st.form_submit_button(label='➕ Add Product to List')
 
+# --- SUBMIT LOGIC ---
 if submit_button:
+    # 1. Validation
     if not new_name or not new_description or not new_short_description_raw:
         st.error("Please fill in Name, Description, and Short Description.")
-    elif selected_category_path == DEFAULT_CATEGORY_PATH:
-        st.error("Please select a Category.")
+    elif selected_category_path == DEFAULT_CATEGORY_PATH or not final_code:
+        st.error("Please go back to Section 1 and select a valid Category.")
     else:
-        # Retrieve the code
-        final_code = path_to_code.get(selected_category_path, '')
-        
+        # 2. Generate Data
         generated_sku = generate_sku_config(new_name)
         new_short_description_html = format_to_html_list(new_short_description_raw)
         
@@ -203,7 +232,7 @@ if submit_button:
             'sku_supplier_config': generated_sku,
             'seller_sku': generated_sku,
             'package_content': new_name,
-            'categories': final_code, 
+            'categories': final_code, # Uses the code from Section 1
             'brand': new_brand,
             'color': new_color,
             'main_material': new_material,
@@ -211,10 +240,11 @@ if submit_button:
         }
         
         st.session_state.products.append(new_product)
-        st.success(f"Added: {new_name} | Code: {final_code}")
+        st.success(f"Added: {new_name}")
 
 # --- OUTPUT ---
-st.header("2. Generated Product List")
+st.markdown("---")
+st.header("3. Download Data")
 if st.session_state.products:
     final_df = create_output_df(st.session_state.products)
     
@@ -225,4 +255,4 @@ if st.session_state.products:
         st.session_state.products = []
         st.rerun()
 else:
-    st.info("Add a product to generate the CSV.")
+    st.info("Products added to the list will appear here.")
