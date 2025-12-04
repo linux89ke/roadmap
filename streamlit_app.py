@@ -159,7 +159,7 @@ with st.sidebar:
     st.header("⚙️ Options")
     
     # The Reset Button
-    st.button("🗑️ Reset All", on_click=hard_reset, type="primary")
+    st.button("🗑️ Reset All Produt details", on_click=hard_reset, type="primary")
     
     # The "Resetted" Message
     if st.session_state.get('reset_success'):
@@ -167,7 +167,7 @@ with st.sidebar:
         # Turn off flag so it disappears on next interaction (optional)
         st.session_state['reset_success'] = False
 
-st.title("📦 Product Data Generator")
+st.title(" BPG")
 
 # --- LOAD DATA ---
 cat_df, path_to_code, root_list = load_category_data()
