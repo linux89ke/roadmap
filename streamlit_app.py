@@ -143,11 +143,11 @@ st.set_page_config(layout="wide", page_title="bpg")
 # --- SIDEBAR (TOTAL RESET) ---
 with st.sidebar:
     st.header("⚙️ Options")
-    st.info("Finished with this batch? Click below to fully reset the app (List, Form, and Categories).")
+    st.info("Finished with this product? Click below to fully reset (List, Form, and Categories).")
     
-    st.button("🗑️ Start New Batch (Reset All)", on_click=hard_reset, type="primary")
+    st.button("Start New Batch (Reset All)", on_click=hard_reset, type="primary")
 
-st.title("📦 Product Data Generator")
+st.title("BPG")
 
 if 'products' not in st.session_state:
     st.session_state.products = []
