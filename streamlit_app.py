@@ -7,7 +7,6 @@ from io import StringIO
 # --- STATIC TEMPLATE DATA ---
 # These values are extracted from the single row of your uploaded file.
 TEMPLATE_DATA = {
-    'brand': 'Generic',
     'product_weight': 1,
     'package_type': '', 
     'package_quantities': '', 
@@ -19,6 +18,7 @@ TEMPLATE_DATA = {
     'shipment_type': 'Own Warehouse',
 }
 # Default values for fields that are now optional inputs
+DEFAULT_BRAND = 'Generic' # Made editable, but defaults to 'Generic'
 DEFAULT_COLOR = ''
 DEFAULT_MATERIAL = '-'
 # ----------------------------
@@ -31,16 +31,12 @@ def format_to_html_list(text):
     if not text:
         return ''
     
-    # Split text by newlines, remove leading/trailing whitespace from each line
     lines = [line.strip() for line in text.split('\n')]
-    
-    # Filter out empty lines and then wrap in <li> tags
     list_items = [f'      <li>{line}</li>' for line in lines if line]
     
     if not list_items:
         return ''
         
-    # Join the items and wrap the entire block in <ul> tags
     list_content = '\n'.join(list_items)
     return f'<ul>\n{list_content}\n    </ul>'
 
@@ -48,7 +44,7 @@ def format_to_html_list(text):
 def generate_sku_config(name):
     """
     Generates sku_supplier_config and seller_sku.
-    NEW LOGIC: Uses the first word of the name (as a proxy for the 'first noun').
+    Logic: Uses the first word of the name (as a proxy for the 'first noun').
     """
     cleaned_name = re.sub(r'[^\w\s-]', '', name).strip()
     words = cleaned_name.split()
@@ -91,9 +87,10 @@ with st.expander("ℹ️ Generation Logic", expanded=False):
     st.markdown("""
     | Field | Generation Logic | Default Value (If Optional Field is Empty) |
     | :--- | :--- | :--- |
-    | **`sku_supplier_config` & `seller_sku`** | **Generated** from the **first word** of the Name (proxy for first noun). | N/A |
+    | **`sku_supplier_config` & `seller_sku`** | **Generated** from the **first word** of the Name. | N/A |
     | **`package_content`** | **Full Name** entered by the user. | N/A |
     | **`short_description`** | Line-by-line input converted to HTML list (`<ul><li>...</li></ul>`). | N/A |
+    | **`brand`** | User Input (Optional) | **`Generic`** |
     | **`color`** | User Input (Optional) | **`''` (Empty String)** |
     | **`main_material`** | User Input (Optional) | **`-` (Hyphen)** |
     """)
@@ -101,13 +98,22 @@ with st.expander("ℹ️ Generation Logic", expanded=False):
 # --- Input Form ---
 st.header("1. Enter New Product Details")
 with st.form(key='product_form'):
-    # Row 1: Name and Optional Fields
-    col_name, col_color, col_material = st.columns([2, 1, 1])
+    # Row 1: Name and Brand
+    col_name, col_brand = st.columns([3, 1])
     
     with col_name:
         new_name = st.text_input("Product Name (First word used for SKU)", 
                                  placeholder="e.g., Mini PCIe to PCI Express 16X Riser")
 
+    with col_brand:
+        # Brand is now editable but defaults to 'Generic'
+        new_brand = st.text_input("Brand (Optional)", 
+                                  value=DEFAULT_BRAND, 
+                                  placeholder="e.g., Apple")
+
+    # Row 2: Optional Attributes
+    col_color, col_material = st.columns(2)
+    
     with col_color:
         new_color = st.text_input("Color (Optional)", 
                                   value=DEFAULT_COLOR, 
@@ -136,14 +142,12 @@ with st.form(key='product_form'):
 if submit_button and new_name and new_description and new_short_description_raw:
     # 1. Generate dynamic fields
     generated_sku = generate_sku_config(new_name)
-    
-    # 2. Assign Package Content to be the full name
     generated_package_content = new_name 
     
-    # 3. Format HTML list
+    # 2. Format HTML list
     new_short_description_html = format_to_html_list(new_short_description_raw)
     
-    # 4. Combine with static data and inputs
+    # 3. Combine with static data and inputs
     new_product = {
         'name': new_name,
         'description': new_description,
@@ -151,9 +155,13 @@ if submit_button and new_name and new_description and new_short_description_raw:
         'sku_supplier_config': generated_sku,
         'seller_sku': generated_sku,
         'package_content': generated_package_content,
+        
+        # Editable/Default Fields
+        'brand': new_brand if new_brand else DEFAULT_BRAND,
         'color': new_color if new_color else DEFAULT_COLOR,
         'main_material': new_material if new_material else DEFAULT_MATERIAL,
-        **TEMPLATE_DATA
+        
+        **TEMPLATE_DATA # Other static fields
     }
     
     st.session_state.products.append(new_product)
