@@ -46,6 +46,10 @@ def hard_reset():
     if 'prod_material' in st.session_state: st.session_state['prod_material'] = DEFAULT_MATERIAL
     if 'prod_desc' in st.session_state: st.session_state['prod_desc'] = ""
     if 'prod_short' in st.session_state: st.session_state['prod_short'] = ""
+    
+    # Custom Columns Reset
+    if 'custom_col_name' in st.session_state: st.session_state['custom_col_name'] = ""
+    if 'custom_col_val' in st.session_state: st.session_state['custom_col_val'] = ""
 
 @st.cache_data
 def load_category_data():
@@ -99,7 +103,8 @@ def generate_sku_config(name):
     return '_'.join(sku_words).upper()
 
 def create_output_df(product_list):
-    columns = [
+    # 1. Define the Standard Order of columns
+    standard_columns = [
         'sku_supplier_config', 'seller_sku', 'name', 'brand', 
         'categories', 
         'product_weight', 'package_type', 'package_quantities', 
@@ -107,8 +112,17 @@ def create_output_df(product_list):
         'description', 'short_description', 'package_content', 'supplier', 
         'shipment_type'
     ]
-    df = pd.DataFrame(product_list, columns=columns)
-    return df.fillna('', inplace=False)
+    
+    # 2. Create DataFrame (This automatically picks up any new custom keys)
+    df = pd.DataFrame(product_list)
+    
+    # 3. Organize Columns: Standard First + New Custom Columns Last
+    existing_standard = [c for c in standard_columns if c in df.columns]
+    custom_columns = [c for c in df.columns if c not in standard_columns]
+    
+    final_order = existing_standard + custom_columns
+    
+    return df[final_order].fillna('')
 
 def get_csv_download_link(df):
     if df.empty:
@@ -131,7 +145,6 @@ with st.sidebar:
     st.header("⚙️ Options")
     st.info("Finished with this batch? Click below to fully reset the app (List, Form, and Categories).")
     
-    # We use a callback function to ensure state is cleared BEFORE the rerun
     st.button("🗑️ Start New Batch (Reset All)", on_click=hard_reset, type="primary")
 
 st.title("📦 Product Data Generator")
@@ -152,7 +165,6 @@ selected_category_path = DEFAULT_CATEGORY_PATH
 with tab1:
     col_dept, col_cat = st.columns([1, 2])
     with col_dept:
-        # Added key='dept_selector' so we can reset it
         selected_root = st.selectbox(
             "Step A: Choose Department", 
             options=["Select Department"] + root_list,
@@ -164,7 +176,6 @@ with tab1:
             filtered_paths = cat_df[cat_df['root_category'] == selected_root]['category'].dropna().unique().tolist()
             filtered_paths = sorted(filtered_paths)
             
-            # Added key='cat_selector_a'
             cat_selection_a = st.selectbox(
                 "Step B: Select Specific Category", 
                 options=[DEFAULT_CATEGORY_PATH] + filtered_paths,
@@ -177,7 +188,6 @@ with tab1:
 
 # --- METHOD B: GLOBAL SEARCH ---
 with tab2:
-    # Added key='search_query'
     search_query = st.text_input(
         "Type a keyword (e.g. 'HDMI', 'Baby', 'Dress')",
         key='search_query'
@@ -187,7 +197,6 @@ with tab2:
         search_results = cat_df[cat_df['category'].str.contains(search_query, case=False, na=False)]
         found_paths = sorted(search_results['category'].unique().tolist())
         if found_paths:
-            # Added key='cat_selector_b'
             cat_selection_b = st.selectbox(
                 f"Found {len(found_paths)} results:", 
                 options=[DEFAULT_CATEGORY_PATH] + found_paths,
@@ -211,7 +220,6 @@ else:
 st.markdown("---")
 st.header("2. Product Details")
 
-# NOTE: We use st.form to group inputs, but we assign KEYS to them for resetting.
 with st.form(key='product_form'):
     col_name, col_brand = st.columns([3, 1])
     with col_name:
@@ -230,6 +238,18 @@ with st.form(key='product_form'):
     new_description = st.text_area("Full Description", key='prod_desc')
     new_short_description_raw = st.text_area("Short Description (Highlights)", height=150, key='prod_short')
     
+    # --- NEW: CUSTOM COLUMN SECTION ---
+    st.markdown("---")
+    st.subheader("Add Custom Column (Optional)")
+    st.caption("Add a specific field for this product (e.g. 'Warranty', 'Expiration').")
+    c_custom_1, c_custom_2 = st.columns(2)
+    with c_custom_1:
+        custom_col_name = st.text_input("Column Name", placeholder="e.g. Warranty", key='custom_col_name')
+    with c_custom_2:
+        custom_col_val = st.text_input("Value", placeholder="e.g. 2 Years", key='custom_col_val')
+    # ----------------------------------
+    
+    st.markdown("---")
     submit_button = st.form_submit_button(label='➕ Add Product to List')
 
 if submit_button:
@@ -241,6 +261,7 @@ if submit_button:
         generated_sku = generate_sku_config(new_name)
         new_short_description_html = format_to_html_list(new_short_description_raw)
         
+        # Base Product Data
         new_product = {
             'name': new_name,
             'description': new_description,
@@ -255,6 +276,10 @@ if submit_button:
             **TEMPLATE_DATA
         }
         
+        # Add Custom Column if provided
+        if custom_col_name and custom_col_val:
+            new_product[custom_col_name] = custom_col_val
+        
         st.session_state.products.append(new_product)
         st.success(f"Added: {new_name}")
 
@@ -264,7 +289,12 @@ st.header("3. Download Data")
 if st.session_state.products:
     final_df = create_output_df(st.session_state.products)
     
-    st.dataframe(final_df[['name', 'categories', 'sku_supplier_config']].tail(5), use_container_width=True)
+    # Preview logic to show custom columns if they exist
+    cols_to_show = ['name', 'categories']
+    if custom_col_name and custom_col_name in final_df.columns:
+        cols_to_show.append(custom_col_name)
+    
+    st.dataframe(final_df.tail(5), use_container_width=True)
     st.markdown(get_csv_download_link(final_df), unsafe_allow_html=True)
     
 else:
