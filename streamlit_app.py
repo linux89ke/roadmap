@@ -3,9 +3,9 @@ import pandas as pd
 import re
 import base64
 from io import StringIO
+from datetime import datetime
 
 # --- STATIC TEMPLATE DATA ---
-# These values are extracted from the single row of your uploaded file.
 TEMPLATE_DATA = {
     'product_weight': 1,
     'package_type': '', 
@@ -18,7 +18,7 @@ TEMPLATE_DATA = {
     'shipment_type': 'Own Warehouse',
 }
 # Default values for fields that are now optional inputs
-DEFAULT_BRAND = 'Generic' # Made editable, but defaults to 'Generic'
+DEFAULT_BRAND = 'Generic'
 DEFAULT_COLOR = ''
 DEFAULT_MATERIAL = '-'
 # ----------------------------
@@ -43,19 +43,36 @@ def format_to_html_list(text):
 
 def generate_sku_config(name):
     """
-    Generates sku_supplier_config and seller_sku.
-    Logic: Uses the first word of the name (as a proxy for the 'first noun').
+    Generates sku_supplier_config and seller_sku using an automated heuristic.
+    Logic: Skips quantity words (if present) and uses the next three significant words.
     """
-    cleaned_name = re.sub(r'[^\w\s-]', '', name).strip()
+    if not name:
+        return "GENERATEDSKU_MISSING"
+
+    # 1. Clean and split the name
+    cleaned_name = re.sub(r'[^\w\s]', '', name).strip()
     words = cleaned_name.split()
+
+    if not words:
+        return "GENERATEDSKU_MISSING"
+
+    # 2. Skip first word if it looks like a quantity (number or ends with 'PCS', 'PACK')
+    start_index = 0
+    first_word = words[0].upper()
+    if re.search(r'\d', first_word) or 'PCS' in first_word or 'PACK' in first_word:
+        start_index = 1
     
-    if words:
-        # Take the first word, remove hyphens/spaces, and uppercase it
-        sku = words[0].replace('-', '').upper()
-    else:
-        sku = "GENERATEDSKU"
-            
+    # 3. Take the next three words from the start index
+    sku_words = words[start_index:start_index + 3]
+    
+    if not sku_words:
+        sku_words = words[0:1] 
+    
+    # 4. Join words with underscores and uppercase
+    sku = '_'.join(sku_words).upper()
+    
     return sku
+
 
 def create_output_df(product_list):
     """Converts a list of product dictionaries into a final DataFrame."""
@@ -70,10 +87,26 @@ def create_output_df(product_list):
     return df.fillna('', inplace=False)
 
 def get_csv_download_link(df):
-    """Generates a link to download the DataFrame as a CSV file."""
+    """Generates a link to download the DataFrame as a CSV file with a descriptive filename."""
+    
+    # 1. Determine Filename based on the first product's name
+    if df.empty:
+        filename = "empty_product_export.csv"
+    else:
+        # Clean the first product's name for a safe filename
+        raw_name = df.iloc[0]['name']
+        cleaned_name = re.sub(r'[^a-zA-Z0-9\s]', '', raw_name).strip()
+        filename_base = cleaned_name.replace(' ', '_').upper()[:30] # Truncate for safety
+
+        if len(df) > 1:
+            filename = f"{filename_base}_and_{len(df)-1}_more.csv"
+        else:
+            filename = f"{filename_base}.csv"
+            
+    # 2. Generate download link
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
-    href = f'<a href="data:file/csv;base64,{b64}" download="generated_products.csv">**Download Generated CSV File**</a>'
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">**Download Generated CSV File: {filename}**</a>'
     return href
 
 # --- Streamlit App Layout ---
@@ -87,7 +120,7 @@ with st.expander("ℹ️ Generation Logic", expanded=False):
     st.markdown("""
     | Field | Generation Logic | Default Value (If Optional Field is Empty) |
     | :--- | :--- | :--- |
-    | **`sku_supplier_config` & `seller_sku`** | **Generated** from the **first word** of the Name. | N/A |
+    | **`sku_supplier_config` & `seller_sku`** | **Automated:** Skips leading quantity (e.g., '10PCS'), then takes the **next three words** and joins them with underscores. | N/A |
     | **`package_content`** | **Full Name** entered by the user. | N/A |
     | **`short_description`** | Line-by-line input converted to HTML list (`<ul><li>...</li></ul>`). | N/A |
     | **`brand`** | User Input (Optional) | **`Generic`** |
@@ -102,14 +135,13 @@ with st.form(key='product_form'):
     col_name, col_brand = st.columns([3, 1])
     
     with col_name:
-        new_name = st.text_input("Product Name (First word used for SKU)", 
-                                 placeholder="e.g., Mini PCIe to PCI Express 16X Riser")
+        new_name = st.text_input("Product Name (Full Listing Title)", 
+                                 placeholder="e.g., 10PCS Refrigerator Food Seal Pocket Fridge Bags - white")
 
     with col_brand:
-        # Brand is now editable but defaults to 'Generic'
         new_brand = st.text_input("Brand (Optional)", 
                                   value=DEFAULT_BRAND, 
-                                  placeholder="e.g., Apple")
+                                  placeholder="e.g., Samsung")
 
     # Row 2: Optional Attributes
     col_color, col_material = st.columns(2)
@@ -165,7 +197,11 @@ if submit_button and new_name and new_description and new_short_description_raw:
     }
     
     st.session_state.products.append(new_product)
-    st.success(f"Added product: **{new_name}** with SKU: **{generated_sku}**")
+    st.success(f"Added product: **{new_name}** with automatically generated SKU: **{generated_sku}**")
+
+elif submit_button and (not new_name or not new_description or not new_short_description_raw):
+    st.error("Please fill in the Product Name, Full Description, and Short Description fields.")
+
 
 # --- Results and Download ---
 st.header("2. Generated Product List")
