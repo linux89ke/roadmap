@@ -33,12 +33,11 @@ TEMPLATE_DATA = {
     'shipment_type': 'Own Warehouse',
 }
 
-# --- INITIALIZE SESSION STATE (Prevents Warnings) ---
+# --- INITIALIZE SESSION STATE ---
 if 'products' not in st.session_state:
     st.session_state.products = []
 
-# We initialize these ONCE. The widgets will read from these keys.
-# This removes the need for 'value=' inside the widget, fixing the warning.
+# Initialize Form Defaults
 defaults = {
     'dept_selector': "Select Department",
     'cat_selector_a': DEFAULT_CATEGORY_PATH,
@@ -52,7 +51,8 @@ defaults = {
     'prod_in_box': "",
     'custom_col_name': "",
     'custom_col_val': "",
-    'reset_success': False # Flag for the message
+    'reset_success': False,
+    'editor_key': 0  # <--- NEW: Key to force-reset the Quill editor
 }
 
 for key, val in defaults.items():
@@ -65,15 +65,14 @@ def hard_reset():
     """Clears the product list AND resets all widget states."""
     st.session_state.products = []
     
-    # Reset all keys to default values
+    # Reset all standard widgets
     for key, val in defaults.items():
         if key in st.session_state:
             st.session_state[key] = val
-            
-    # Clear Quill Editor (Delete key forces reset)
-    if 'quill_full_html' in st.session_state: del st.session_state['quill_full_html']
     
-    # Trigger the success message
+    # FORCE RESET QUILL: Incrementing this key creates a brand new editor instance
+    st.session_state['editor_key'] += 1
+            
     st.session_state['reset_success'] = True
 
 @st.cache_data
@@ -154,20 +153,15 @@ def get_csv_download_link(df):
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">**Download Generated CSV File: {filename}**</a>'
     return href
 
-# --- SIDEBAR (Simple Reset) ---
+# --- SIDEBAR (Reset) ---
 with st.sidebar:
     st.header("⚙️ Options")
-    
-    # The Reset Button
-    st.button("🗑️ Reset All Produt details", on_click=hard_reset, type="primary")
-    
-    # The "Resetted" Message
+    st.button("🗑️ Reset All", on_click=hard_reset, type="primary")
     if st.session_state.get('reset_success'):
         st.success("Resetted")
-        # Turn off flag so it disappears on next interaction (optional)
         st.session_state['reset_success'] = False
 
-st.title(" BPG")
+st.title("📦 Product Data Generator")
 
 # --- LOAD DATA ---
 cat_df, path_to_code, root_list = load_category_data()
@@ -238,7 +232,6 @@ with st.form(key='product_form'):
     with col_name:
         new_name = st.text_input("Product Name", placeholder="e.g., 10PCS Refrigerator Bags", key='prod_name')
     with col_brand:
-        # NOTICE: No 'value=' parameter here. It uses session_state['prod_brand'] automatically.
         new_brand = st.text_input("Brand", key='prod_brand')
 
     st.subheader("Optional Attributes")
@@ -253,10 +246,13 @@ with st.form(key='product_form'):
     # --- EDITOR 1: FULL DESCRIPTION (Visual Editor) ---
     st.subheader("Full Description")
     st.caption("Detailed product information.")
+    
+    # DYNAMIC KEY: We append the 'editor_key' number to the widget key.
+    # When reset is clicked, this number changes, creating a FRESH empty editor.
     full_desc_html = st_quill(
         placeholder="Enter full description here...",
         html=True,
-        key='quill_full_html'
+        key=f"quill_full_html_{st.session_state['editor_key']}"
     )
 
     # --- EDITOR 2: SHORT DESCRIPTION (Text Area) ---
