@@ -3,6 +3,8 @@ import pandas as pd
 import re
 import base64
 import os
+
+# --- IMPORT QUILL ---
 try:
     from streamlit_quill import st_quill
 except ImportError:
@@ -50,10 +52,11 @@ def hard_reset():
     if 'custom_col_name' in st.session_state: st.session_state['custom_col_name'] = ""
     if 'custom_col_val' in st.session_state: st.session_state['custom_col_val'] = ""
     
-    # Clear BOTH Quill Editors
-    # (Streamlit components sometimes need a manual key clear or just empty string assignment)
-    if 'quill_full_html' in st.session_state: st.session_state['quill_full_html'] = ""
-    if 'quill_short_html' in st.session_state: st.session_state['quill_short_html'] = ""
+    # Clear Quill State
+    # Note: To truly reset visual editor content, we might need to rely on 
+    # Streamlit reloading the component with the empty state key.
+    if 'quill_full_html' in st.session_state: del st.session_state['quill_full_html']
+    if 'quill_short_html' in st.session_state: del st.session_state['quill_short_html']
 
 @st.cache_data
 def load_category_data():
@@ -223,21 +226,23 @@ with st.form(key='product_form'):
     # --- EDITOR 1: FULL DESCRIPTION ---
     st.subheader("Full Description")
     st.caption("Detailed product information.")
+    
+    # FIX: Removed the invalid 'defaults' parameter
     full_desc_html = st_quill(
         placeholder="Enter full description here...",
         html=True,
-        key='quill_full_html',
-        defaults="" 
+        key='quill_full_html'
     )
 
     # --- EDITOR 2: SHORT DESCRIPTION ---
     st.subheader("Short Description (Highlights)")
     st.caption("Key bullet points.")
+    
+    # FIX: Removed the invalid 'defaults' parameter
     short_desc_html = st_quill(
         placeholder="Type bullet points here...",
         html=True,
-        key='quill_short_html',
-        defaults="" 
+        key='quill_short_html'
     )
     
     # --- CUSTOM COLUMN SECTION ---
@@ -263,8 +268,8 @@ if submit_button:
         # Base Product Data
         new_product = {
             'name': new_name,
-            'description': full_desc_html,    # Using Quill HTML
-            'short_description': short_desc_html, # Using Quill HTML
+            'description': full_desc_html,    
+            'short_description': short_desc_html, 
             'sku_supplier_config': generated_sku,
             'seller_sku': generated_sku,
             'package_content': new_name,
