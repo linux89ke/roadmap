@@ -1,802 +1,174 @@
 import streamlit as st
 import pandas as pd
-from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urljoin, urlparse
-from io import BytesIO
-import json
 import re
-import time
-import random
-import requests
-import cloudscraper
-from tenacity import retry, stop_after_attempt, wait_exponential
+import base64
+from io import StringIO
 
-# -----------------------------
-# Config
-# -----------------------------
-MAX_PAGES = 50  # Maximum pages to try
-MAX_WORKERS = 4  # Balanced for cloud environments
-PAGE_SLEEP = (1.0, 2.0)  # Delay to avoid bot detection
-MAX_RUNTIME = 1800  # Max runtime in seconds (30 minutes)
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-]
-EXCLUDED_SUBCATS = ["sp-", "mlp-", "cart", "account", "login", "signup", "help", "sell", "official-stores", "flash-sale", "contact", "about"]
+# --- STATIC TEMPLATE DATA ---
+# These values are extracted from the single row of your uploaded file
+# 'products_20251117073717_101843 wheel.csv' and are used as defaults.
+TEMPLATE_DATA = {
+    'brand': 'Generic',
+    'product_weight': 1,
+    'package_type': '', 
+    'package_quantities': '', 
+    'variation': '?',
+    'price': 100000,
+    'tax_class': 'Default',
+    'cost': '', 
+    'supplier': 'MarketPlace forfeited items',
+    'shipment_type': 'Own Warehouse',
+}
+# Default values for fields that are now optional inputs
+DEFAULT_COLOR = '' # Was NaN in original file
+DEFAULT_MATERIAL = '-' # Was '-' in original file
+# ----------------------------
 
-# -----------------------------
-# Fetching Helper
-# -----------------------------
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def fetch_page(url: str, proxy=None):
-    try:
-        scraper = cloudscraper.create_scraper()
-        headers = {"User-Agent": random.choice(USER_AGENTS)}
-        proxies = {"http": proxy, "https": proxy} if proxy else None
-        response = scraper.get(url, headers=headers, proxies=proxies, timeout=20)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        st.error(f"Failed to fetch {url}: {str(e)}")
-        return None
 
-# -----------------------------
-# Parsing Helpers
-# -----------------------------
-def all_ldjson_objects(soup: BeautifulSoup):
-    for s in soup.find_all("script", {"type": "application/ld+json"}):
-        try:
-            text = s.string or s.get_text()
-            if text:
-                data = json.loads(text)
-                if isinstance(data, list):
-                    yield from data
-                else:
-                    yield data
-        except Exception:
-            continue
-
-def find_product_objs_from_ldjson(soup: BeautifulSoup):
-    products = []
-    for obj in all_ldjson_objects(soup):
-        if isinstance(obj, dict) and "@graph" in obj:
-            for g in obj.get("@graph", []):
-                if isinstance(g, dict) and g.get("@type") == "Product":
-                    products.append(g)
-        if isinstance(obj, dict) and obj.get("@type") == "Product":
-            products.append(obj)
-    return products
-
-def parse_data_layer(soup: BeautifulSoup):
-    data_layer = {}
-    for script in soup.find_all("script"):
-        text = script.string or script.get_text()
-        if "dataLayer" in text:
-            try:
-                match = re.search(r'dataLayer\s*=\s*($$ .*? $$);', text, re.DOTALL)
-                if match:
-                    data = json.loads(match.group(1))
-                    if isinstance(data, list) and data:
-                        return data[0]
-            except Exception:
-                continue
-    return data_layer
-
-def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
-    links = set()
-    # Strategy 1: Main product grid
-    product_grid = soup.select_one("div[class*='-paxs'], div[class*='row'], section[class*='card'], div[class*='products'], div[class*='item'], div[class*='prd-grid'], div[class*='sku']")
-    if product_grid:
-        product_cards = product_grid.find_all("article", recursive=False) or product_grid.find_all("div", recursive=False)
-        for card in product_cards:
-            if link_tag := card.find("a", href=True):
-                href = link_tag['href'].split("#")[0]
-                if href.endswith(".html") and not any(excl in href.lower() for excl in EXCLUDED_SUBCATS):
-                    links.add(urljoin(base_url, href))
-        if links:
-            return list(links)
+def generate_sku_config(name):
+    """
+    Generates sku_supplier_config and seller_sku.
+    Logic: Takes the first two words of the name, cleans them (removes non-alphanumeric/hyphens), and converts to uppercase.
+    """
+    cleaned_name = re.sub(r'[^\w\s-]', '', name).strip()
+    words = cleaned_name.split()
     
-    # Strategy 2: Broader article or div-based search
-    for card in soup.select("article[class*='prd'], div[class*='prd'], div[class*='item'], div[class*='sku']"):
-        if link_tag := card.find("a", href=True):
-            href = link_tag['href'].split("#")[0]
-            if href.endswith(".html") and not any(excl in href.lower() for excl in EXCLUDED_SUBCATS):
-                links.add(urljoin(base_url, href))
-        if links:
-            return list(links)
-    
-    # Strategy 3: Generic link search
-    for link_tag in soup.select("a[href$='.html']"):
-        href = link_tag['href'].split("#")[0]
-        if not any(excl in href.lower() for excl in EXCLUDED_SUBCATS):
-            links.add(urljoin(base_url, href))
-    
-    return list(links)
-
-def get_total_pages(soup: BeautifulSoup):
-    try:
-        pagination = soup.select_one("nav.pagination, div.pagination, ul.pagination")
-        if pagination:
-            last_page = pagination.find_all("a")[-2].get_text(strip=True)  # Skip 'Next'
-            if last_page.isdigit():
-                return min(int(last_page), MAX_PAGES)
-        page_info = soup.find(lambda t: re.search(r'\b\d+\s*of\s*\d+\b', t.get_text()))
-        if page_info:
-            match = re.search(r'\b\d+\s*of\s*(\d+)\b', page_info.get_text())
-            if match:
-                return min(int(match.group(1)), MAX_PAGES)
-        data_layer = parse_data_layer(soup)
-        if data_layer.get("ecommerce", {}).get("impressions"):
-            total_items = len(data_layer["ecommerce"]["impressions"])
-            return min((total_items // 40) + 1, MAX_PAGES)  # Assume 40 items per page
-        return MAX_PAGES
-    except Exception:
-        return MAX_PAGES
-
-def get_product_links(category_url: str, base_url: str, status_placeholder, proxy=None, depth=0, start_time=None):
-    if start_time is None:
-        start_time = time.time()
-    
-    if time.time() - start_time > MAX_RUNTIME:
-        status_placeholder.text(f"Stopping {category_url}: Maximum runtime ({MAX_RUNTIME} seconds) exceeded.")
-        return set()
-    
-    if depth > 1:
-        status_placeholder.text(f"Skipping {category_url}: Maximum subcategory depth reached.")
-        return set()
-    
-    all_links = set()
-    page = 1
-    
-    html_content = fetch_page(category_url, proxy)
-    if not html_content:
-        st.error(f"Failed to fetch {category_url}. Check URL or proxy settings.")
-        return []
-    
-    soup = BeautifulSoup(html_content, "lxml")
-    
-    # Check for subcategories
-    subcategories = soup.select("a[href*='/'][href$='/']")
-    for subcat in subcategories:
-        subcat_url = urljoin(base_url, subcat['href'])
-        if ("jumia.co.ke" in subcat_url and 
-            not any(excl in subcat_url.lower() for excl in EXCLUDED_SUBCATS) and
-            not any(x in subcat_url.lower() for x in ["login", "account", "cart"])):
-            status_placeholder.text(f"Exploring subcategory: {subcat_url}")
-            all_links.update(get_product_links(subcat_url, base_url, status_placeholder, proxy, depth + 1, start_time))
-    
-    max_pages = get_total_pages(soup)
-    status_placeholder.text(f"Detected {max_pages} pages for {category_url}")
-    
-    while page <= max_pages:
-        pagination_formats = [
-            f"{category_url}{'' if category_url.endswith('/') else '/'}{'?page=' if '?' not in category_url else '&page='}{page}",
-            f"{category_url.rstrip('/')}/page/{page}/"
-        ]
-        page_url = pagination_formats[0]
-        html_content = None
-        for fmt in pagination_formats:
-            status_placeholder.text(f"Collecting links… page {page} ({fmt})")
-            html_content = fetch_page(fmt, proxy)
-            if html_content:
-                page_url = fmt
-                break
-        else:
-            st.warning(f"Failed to fetch page {page} for all pagination formats. Stopping pagination.")
-            break
+    if len(words) >= 2:
+        sku = (words[0] + words[1]).replace('-', '').upper()
+    elif len(words) == 1:
+        sku = words[0].upper()
+    else:
+        sku = "GENERATEDSKU"
         
-        soup = BeautifulSoup(html_content, "lxml")
-        found_links = parse_links_from_grid(soup, base_url)
+    return sku
+
+def generate_package_content(name):
+    """
+    Generates package_content.
+    Logic: Takes the first word of the name, cleans it, and capitalizes it.
+    """
+    cleaned_name = re.sub(r'[^\w\s-]', '', name).strip()
+    words = cleaned_name.split()
+    
+    if words:
+        return words[0].capitalize()
+    return "Item"
+
+def create_output_df(product_list):
+    """Converts a list of product dictionaries into a final DataFrame."""
+    # Define the final order of columns as seen in the original CSV
+    columns = [
+        'sku_supplier_config', 'seller_sku', 'name', 'brand', 'product_weight', 
+        'package_type', 'package_quantities', 'variation', 'price', 'tax_class', 
+        'cost', 'color', 'main_material', 'description', 'short_description', 
+        'package_content', 'supplier', 'shipment_type'
+    ]
+    
+    df = pd.DataFrame(product_list, columns=columns)
+    # Ensure all NaN/None values are treated as empty strings for CSV generation
+    return df.fillna('', inplace=False)
+
+def get_csv_download_link(df):
+    """Generates a link to download the DataFrame as a CSV file."""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="generated_products.csv">**Download Generated CSV File**</a>'
+    return href
+
+# --- Streamlit App Layout ---
+st.set_page_config(layout="wide", page_title="Product Data Generator")
+st.title("📦 Product Data Generator")
+
+if 'products' not in st.session_state:
+    st.session_state.products = []
+
+with st.expander("ℹ️ Generation Logic", expanded=False):
+    st.markdown("""
+    | Field | Generation Logic | Default Value (If Optional Field is Empty) |
+    | :--- | :--- | :--- |
+    | **`sku_supplier_config` & `seller_sku`** | Generated from the first two words of the Name. | N/A |
+    | **`package_content`** | Generated from the first word of the Name. | N/A |
+    | **`color`** | User Input (Optional) | **`''` (Empty String)** |
+    | **`main_material`** | User Input (Optional) | **`-` (Hyphen)** |
+    | **All other fields** | Static Template values. | N/A |
+    """)
+
+# --- Input Form ---
+st.header("1. Enter New Product Details")
+with st.form(key='product_form'):
+    # Row 1: Name and Optional Fields
+    col_name, col_color, col_material = st.columns([2, 1, 1])
+    
+    with col_name:
+        new_name = st.text_input("Product Name (This drives SKU generation)", 
+                                 placeholder="e.g., Mini PCIe to PCI Express 16X Riser")
+
+    with col_color:
+        # Optional: Uses the default value if left blank
+        new_color = st.text_input("Color (Optional)", 
+                                  value=DEFAULT_COLOR, 
+                                  placeholder="e.g., Black")
+
+    with col_material:
+        # Optional: Uses the default value if left blank
+        new_material = st.text_input("Main Material (Optional)", 
+                                     value=DEFAULT_MATERIAL, 
+                                     placeholder="e.g., Plastic")
         
-        if not found_links:
-            st.warning(f"No product links found on page {page} ({page_url}). Stopping pagination.")
-            break
+    st.markdown("---")
         
-        new_links = set(found_links) - all_links
-        if not new_links and page > 1:
-            st.warning(f"No new links found on page {page} ({page_url}). Stopping pagination.")
-            break
-        
-        all_links.update(new_links)
-        status_placeholder.text(f"Found {len(new_links)} new links on page {page} (Total: {len(all_links)})")
-        page += 1
-        if time.time() - start_time > MAX_RUNTIME:
-            status_placeholder.text(f"Stopping {category_url}: Maximum runtime ({MAX_RUNTIME} seconds) exceeded.")
-            break
-        time.sleep(random.uniform(*PAGE_SLEEP))
-        
-    return list(all_links)
+    st.subheader("Description Fields")
+    new_description = st.text_area("Full Description", 
+                                   placeholder="Paste the full, detailed product description here...")
+    new_short_description = st.text_area("Short Description (Highlights)", 
+                                         placeholder="Paste the bullet points or key features here...")
 
-def text_or_na(node, default="Not indicated"):
-    if not node:
-        return default
-    t = node.get_text(" ", strip=True) if hasattr(node, "get_text") else str(node).strip()
-    return t if t else default
+    st.markdown("---")
+    
+    submit_button = st.form_submit_button(label='➕ Add Product to List')
 
-# -----------------------------
-# Core Extraction Logic
-# -----------------------------
-def clean_price(price_str: str) -> str:
-    if not price_str or price_str == "Not indicated":
-        return "Not indicated"
-    price_str = re.sub(r'[^\d,.]', '', price_str)
-    price_str = price_str.replace(',', '')
-    return price_str
-
-def extract_basic_fields(soup: BeautifulSoup):
-    name, price, sku, seller = "Not indicated", "Not indicated", "Not indicated", "Not indicated"
-    main_content = soup.find("main", {"role": "main"}) or soup
+if submit_button and new_name and new_description and new_short_description:
+    # 1. Generate dynamic fields
+    generated_sku = generate_sku_config(new_name)
+    generated_package_content = generate_package_content(new_name)
     
-    # Try dataLayer first
-    data_layer = parse_data_layer(soup)
-    if data_layer.get("ecommerce", {}).get("detail", {}).get("products"):
-        product = data_layer["ecommerce"]["detail"]["products"][0]
-        name = product.get("name", name)
-        sku = product.get("id", sku)
-        price = product.get("price", price)
-        seller = data_layer.get("dimension23", seller)
-    
-    # Try ld+json
-    products = find_product_objs_from_ldjson(soup)
-    if products:
-        p = products[0]
-        name = p.get("name", name)
-        sku = p.get("sku", sku)
-        if isinstance(p.get("offers"), dict):
-            price = p["offers"].get("price", price)
-            if isinstance(p["offers"].get("seller"), dict):
-                seller = p["offers"]["seller"].get("name", seller)
-    
-    # Fallback to HTML parsing
-    if name == "Not indicated":
-        name = text_or_na(main_content.select_one("h1"))
-    if price == "Not indicated":
-        price = text_or_na(main_content.select_one("span.-b, span.price, div.price, span[data-price], div.-prc"))
-    if seller == "Not indicated":
-        seller_node = main_content.select_one("div.seller-info, div.-seller, p.seller-name, a.seller-link, div.seller-details, span.seller")
-        if seller_node:
-            seller_text = text_or_na(seller_node)
-            if "follow" not in seller_text.lower():
-                seller = seller_text
-        else:
-            for node in main_content.select("p, div, span"):
-                text = node.get_text(strip=True).lower()
-                if "seller" in text and not any(x in text for x in ["follow", "rating", "score"]):
-                    seller = text_or_na(node)
-                    break
-    if seller == "Not indicated" and main_content.select_one('img[alt*="Jumia Express"]'):
-        seller = "Jumia"
-    
-    return name, clean_price(price), sku, seller
-
-def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
-    warranty_title, warranty_specs, warranty_address = "Not indicated", "Not indicated", "Not indicated"
-    main_content = soup.find("main", {"role": "main"}) or soup
-    
-    if re.search(r"(warranty|\b\d+\s?(yr|year|month))", title_text or "", re.I):
-        warranty_title = title_text
-    
-    warranty_heading = main_content.find(lambda t: t.name in ['p', 'div', 'span'] and 'warranty' in t.get_text(strip=True).lower())
-    if warranty_heading and (detail_node := warranty_heading.find_next_sibling()):
-        warranty_specs = text_or_na(detail_node)
-    
-    if warranty_specs == "Not indicated":
-        for tr in main_content.select("div.-pdp-add-info tr, table.specifications tr, div.-spec"):
-            cells = tr.find_all("td")
-            if len(cells) == 2 and "warranty" in cells[0].get_text(strip=True).lower():
-                warranty_specs = cells[1].get_text(strip=True)
-                break
-    
-    if warranty_specs == "Not indicated":
-        desc = main_content.select_one("div.markup, div.-product-desc, div.description")
-        if desc:
-            desc_text = desc.get_text(strip=True).lower()
-            match = re.search(r'warranty\s*[:\-]?\s*(\d+\s*(year|month|yr|mo)s?\s*(?:warranty)?)', desc_text, re.I)
-            if match:
-                warranty_specs = match.group(0)
-    
-    warranty_address_node = main_content.find(lambda t: t.name in ['p', 'div', 'span'] and 'warranty address' in t.get_text(strip=True).lower())
-    if warranty_address_node:
-        warranty_address = text_or_na(warranty_address_node.find_next_sibling() or warranty_address_node)
-    
-    return warranty_title, warranty_specs, warranty_address
-
-def parse_product(url: str, proxy=None):
-    html_content = fetch_page(url, proxy)
-    if not html_content:
-        return {col: "Error fetching page" for col in ["Product Title", "SKU", "Seller", "Price", "Warranty Title", "Warranty (Specs)", "Warranty Address"]} | {"Product URL": url}
-    soup = BeautifulSoup(html_content, "lxml")
-    name, price, sku, seller = extract_basic_fields(soup)
-    w_title, w_specs, w_addr = extract_warranty_fields(soup, name)
-    return {
-        "Product Title": name or "Not indicated",
-        "SKU": sku or "Not indicated",
-        "Seller": seller or "Not indicated",
-        "Price": price or "Not indicated",
-        "Warranty Title": w_title or "Not indicated",
-        "Warranty (Specs)": w_specs or "Not indicated",
-        "Warranty Address": w_addr or "Not indicated",
-        "Product URL": url,
+    # 2. Combine with static data and inputs
+    new_product = {
+        'name': new_name,
+        'description': new_description,
+        'short_description': new_short_description,
+        'sku_supplier_config': generated_sku,
+        'seller_sku': generated_sku,
+        'package_content': generated_package_content,
+        'color': new_color if new_color else DEFAULT_COLOR,  # Use input or default
+        'main_material': new_material if new_material else DEFAULT_MATERIAL, # Use input or default
+        **TEMPLATE_DATA # Unpacks all other static fields
     }
+    
+    # 3. Add to session state list
+    st.session_state.products.append(new_product)
+    st.success(f"Added product: **{new_name}** with SKU: **{generated_sku}**")
 
-# -----------------------------
-# Streamlit UI
-# -----------------------------
-st.set_page_config(page_title="Jumia Warranty Scraper", layout="wide")
-st.title("Jumia Warranty Scraper")
-st.caption("Scrapes product details from any Jumia Kenya category page. Enter a category URL and optional proxy settings.")
+# --- Results and Download ---
+st.header("2. Generated Product List")
 
-category_url = st.text_input("Enter Jumia category URL", placeholder="e.g., https://www.jumia.co.ke/fashion/ or https://www.jumia.co.ke/baby-products/")
-proxy = st.text_input("Proxy (optional, format: http://user:pass@host:port)", placeholder="Leave blank for no proxy")
-debug_mode = st.checkbox("Enable Debug Mode (logs raw HTML for failed pages)")
+if st.session_state.products:
+    st.info(f"Total products added: **{len(st.session_state.products)}**")
+    
+    # Create the final DataFrame
+    final_df = create_output_df(st.session_state.products)
+    
+    # Display the last few rows for review
+    st.subheader("Preview of Generated Data")
+    st.dataframe(final_df.tail(5), use_container_width=True)
+    
+    # Download link
+    st.markdown(get_csv_download_link(final_df), unsafe_allow_html=True)
+    
+    st.markdown("---")
+    if st.button("🗑️ Clear All Products"):
+        st.session_state.products = []
+        st.rerun()
 
-if st.button("Scrape Category"):
-    if not category_url:
-        st.error("Please enter a category URL.")
-        st.stop()
-    
-    try:
-        parsed_url = urlparse(category_url)
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        if not all([parsed_url.scheme, parsed_url.netloc, "jumia.co.ke" in base_url]) or "product" in parsed_url.path.lower():
-            raise ValueError("Invalid URL. Please enter a valid Jumia category URL (e.g., https://www.jumia.co.ke/electronics/).")
-        if any(excl in parsed_url.path.lower() for excl in EXCLUDED_SUBCATS):
-            raise ValueError(f"Invalid category URL. URLs containing {', '.join(EXCLUDED_SUBCATS)} are not supported.")
-    except (ValueError, AttributeError) as e:
-        st.error(str(e))
-        st.stop()
-
-    st.subheader(f"Step 1 — Collecting product links from {category_url}")
-    link_status = st.empty()
-    with st.spinner(f"Collecting product links for {category_url}… This may take a moment."):
-        start_time = time.time()
-        links = get_product_links(category_url, base_url, link_status, proxy, start_time=start_time)
-    
-    if not links:
-        st.error(
-            f"No product URLs found for {category_url}. Possible causes:\n"
-            "- The category URL may be incorrect or empty.\n"
-            "- The website may have blocked the request (try using a proxy or running locally).\n"
-            "- The HTML structure may have changed (enable Debug Mode to inspect HTML).\n"
-            "Please check the URL or try again later."
-        )
-        if debug_mode:
-            html_content = fetch_page(category_url, proxy)
-            if html_content:
-                st.text_area("Debug: Raw HTML", html_content[:5000], height=300)
-        st.stop()
-    
-    st.success(f"Found {len(links)} product URLs for {category_url}.")
-    st.subheader("Step 2 — Scraping product pages")
-    prog = st.progress(0.0)
-    status = st.empty()
-    results = []
-    total = len(links)
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = {ex.submit(parse_product, u, proxy): u for u in links}
-        for i, fut in enumerate(as_completed(futures)):
-            if time.time() - start_time > MAX_RUNTIME:
-                st.error(f"Scraping stopped: Maximum runtime ({MAX_RUNTIME} seconds) exceeded.")
-                break
-            result = fut.result()
-            results.append(result)
-            prog.progress((i + 1) / total)
-            status.text(f"Scraped {i + 1}/{total}")
-            if debug_mode and "Error fetching page" in result.values():
-                html_content = fetch_page(result["Product URL"], proxy)
-                if html_content:
-                    st.text_area(f"Debug: Raw HTML for {result['Product URL']}", html_content[:5000], height=300)
-    
-    st.success("Scraping complete!")
-    df = pd.DataFrame(results)
-    for col in ["Product Title", "SKU", "Seller", "Price", "Warranty Title", "Warranty (Specs)", "Warranty Address"]:
-        df[col] = df[col].apply(lambda x: str(x).strip() if x and str(x).strip() else "Not indicated")
-    st.dataframe(df, use_container_width=True)
-    
-    try:
-        import xlsxwriter
-        @st.cache_data
-        def to_excel_bytes(frame: pd.DataFrame) -> bytes:
-            buf = BytesIO()
-            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                frame.to_excel(writer, index=False, sheet_name="Products")
-            return buf.getvalue()
-        st.download_button("📥 Download Excel", to_excel_bytes(df), "jumia_products.xlsx")
-    except ImportError:
-        st.error("Excel download unavailable: xlsxwriter module not found. Using CSV download instead.")
-    
-    st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")
-import streamlit as st
-import pandas as pd
-from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urljoin, urlparse
-from io import BytesIO
-import json
-import re
-import time
-import random
-import requests
-import cloudscraper
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-# -----------------------------
-# Config
-# -----------------------------
-MAX_PAGES = 50  # Maximum pages to try
-MAX_WORKERS = 4  # Balanced for cloud environments
-PAGE_SLEEP = (1.0, 2.0)  # Delay to avoid bot detection
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-]
-EXCLUDED_SUBCATS = ["sp-", "mlp-", "cart", "account", "login", "signup", "help", "sell", "official-stores", "flash-sale", "contact", "about"]
-
-# -----------------------------
-# Fetching Helper
-# -----------------------------
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def fetch_page(url: str, proxy=None):
-    try:
-        scraper = cloudscraper.create_scraper()
-        headers = {"User-Agent": random.choice(USER_AGENTS)}
-        proxies = {"http": proxy, "https": proxy} if proxy else None
-        response = scraper.get(url, headers=headers, proxies=proxies, timeout=20)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        st.error(f"Failed to fetch {url}: {str(e)}")
-        return None
-
-# -----------------------------
-# Parsing Helpers
-# -----------------------------
-def all_ldjson_objects(soup: BeautifulSoup):
-    for s in soup.find_all("script", {"type": "application/ld+json"}):
-        try:
-            text = s.string or s.get_text()
-            if text:
-                data = json.loads(text)
-                if isinstance(data, list):
-                    yield from data
-                else:
-                    yield data
-        except Exception:
-            continue
-
-def find_product_objs_from_ldjson(soup: BeautifulSoup):
-    products = []
-    for obj in all_ldjson_objects(soup):
-        if isinstance(obj, dict) and "@graph" in obj:
-            for g in obj.get("@graph", []):
-                if isinstance(g, dict) and g.get("@type") == "Product":
-                    products.append(g)
-        if isinstance(obj, dict) and obj.get("@type") == "Product":
-            products.append(obj)
-    return products
-
-def parse_data_layer(soup: BeautifulSoup):
-    data_layer = {}
-    for script in soup.find_all("script"):
-        text = script.string or script.get_text()
-        if "dataLayer" in text:
-            try:
-                match = re.search(r'dataLayer\s*=\s*($$ .*? $$);', text, re.DOTALL)
-                if match:
-                    data = json.loads(match.group(1))
-                    if isinstance(data, list) and data:
-                        return data[0]
-            except Exception:
-                continue
-    return data_layer
-
-def parse_links_from_grid(soup: BeautifulSoup, base_url: str):
-    links = set()
-    # Strategy 1: Main product grid
-    product_grid = soup.select_one("div[class*='-paxs'], div[class*='row'], section[class*='card'], div[class*='products'], div[class*='item'], div[class*='prd-grid']")
-    if product_grid:
-        product_cards = product_grid.find_all("article", recursive=False) or product_grid.find_all("div", recursive=False)
-        for card in product_cards:
-            if link_tag := card.find("a", href=True):
-                href = link_tag['href'].split("#")[0]
-                if href.endswith(".html") and not any(excl in href.lower() for excl in EXCLUDED_SUBCATS):
-                    links.add(urljoin(base_url, href))
-        if links:
-            return list(links)
-    
-    # Strategy 2: Broader article or div-based search
-    for card in soup.select("article[class*='prd'], div[class*='prd'], div[class*='item']"):
-        if link_tag := card.find("a", href=True):
-            href = link_tag['href'].split("#")[0]
-            if href.endswith(".html") and not any(excl in href.lower() for excl in EXCLUDED_SUBCATS):
-                links.add(urljoin(base_url, href))
-        if links:
-            return list(links)
-    
-    # Strategy 3: Generic link search
-    for link_tag in soup.select("a[href$='.html']"):
-        href = link_tag['href'].split("#")[0]
-        if not any(excl in href.lower() for excl in EXCLUDED_SUBCATS):
-            links.add(urljoin(base_url, href))
-    
-    return list(links)
-
-def get_total_pages(soup: BeautifulSoup):
-    try:
-        pagination = soup.select_one("nav.pagination, div.pagination, ul.pagination")
-        if pagination:
-            last_page = pagination.find_all("a")[-2].get_text(strip=True)  # Skip 'Next'
-            if last_page.isdigit():
-                return min(int(last_page), MAX_PAGES)
-        page_info = soup.find(lambda t: re.search(r'\b\d+\s*of\s*\d+\b', t.get_text()))
-        if page_info:
-            match = re.search(r'\b\d+\s*of\s*(\d+)\b', page_info.get_text())
-            if match:
-                return min(int(match.group(1)), MAX_PAGES)
-        # Check for 'dataLayer' pagination info
-        data_layer = parse_data_layer(soup)
-        if data_layer.get("ecommerce", {}).get("impressions"):
-            total_items = len(data_layer["ecommerce"]["impressions"])
-            return min((total_items // 40) + 1, MAX_PAGES)  # Assume 40 items per page
-        return MAX_PAGES
-    except Exception:
-        return MAX_PAGES
-
-def get_product_links(category_url: str, base_url: str, status_placeholder, proxy=None, depth=0):
-    if depth > 1:
-        status_placeholder.text(f"Skipping {category_url}: Maximum subcategory depth reached.")
-        return set()
-    
-    all_links = set()
-    page = 1
-    
-    html_content = fetch_page(category_url, proxy)
-    if not html_content:
-        st.error(f"Failed to fetch {category_url}. Check URL or proxy settings.")
-        return []
-    
-    soup = BeautifulSoup(html_content, "lxml")
-    
-    # Check for subcategories
-    subcategories = soup.select("a[href*='/'][href$='/']")
-    for subcat in subcategories:
-        subcat_url = urljoin(base_url, subcat['href'])
-        if ("jumia.co.ke" in subcat_url and 
-            not any(excl in subcat_url.lower() for excl in EXCLUDED_SUBCATS) and
-            not any(x in subcat_url.lower() for x in ["login", "account", "cart"])):
-            status_placeholder.text(f"Exploring subcategory: {subcat_url}")
-            all_links.update(get_product_links(subcat_url, base_url, status_placeholder, proxy, depth + 1))
-    
-    max_pages = get_total_pages(soup)
-    status_placeholder.text(f"Detected {max_pages} pages for {category_url}")
-    
-    while page <= max_pages:
-        pagination_formats = [
-            f"{category_url}{'' if category_url.endswith('/') else '/'}{'?page=' if '?' not in category_url else '&page='}{page}",
-            f"{category_url.rstrip('/')}/page/{page}/"
-        ]
-        page_url = pagination_formats[0]
-        html_content = None
-        for fmt in pagination_formats:
-            status_placeholder.text(f"Collecting links… page {page} ({fmt})")
-            html_content = fetch_page(fmt, proxy)
-            if html_content:
-                page_url = fmt
-                break
-        else:
-            st.warning(f"Failed to fetch page {page} for all pagination formats. Stopping pagination.")
-            break
-        
-        soup = BeautifulSoup(html_content, "lxml")
-        found_links = parse_links_from_grid(soup, base_url)
-        
-        if not found_links:
-            st.warning(f"No product links found on page {page} ({page_url}). Stopping pagination.")
-            break
-        
-        new_links = set(found_links) - all_links
-        if not new_links and page > 1:
-            st.warning(f"No new links found on page {page} ({page_url}). Stopping pagination.")
-            break
-        
-        all_links.update(new_links)
-        status_placeholder.text(f"Found {len(new_links)} new links on page {page} (Total: {len(all_links)})")
-        page += 1
-        time.sleep(random.uniform(*PAGE_SLEEP))
-        
-    return list(all_links)
-
-def text_or_na(node, default="Not indicated"):
-    if not node:
-        return default
-    t = node.get_text(" ", strip=True) if hasattr(node, "get_text") else str(node).strip()
-    return t if t else default
-
-# -----------------------------
-# Core Extraction Logic
-# -----------------------------
-def clean_price(price_str: str) -> str:
-    if not price_str or price_str == "Not indicated":
-        return "Not indicated"
-    price_str = re.sub(r'[^\d,.]', '', price_str)
-    price_str = price_str.replace(',', '')
-    return price_str
-
-def extract_basic_fields(soup: BeautifulSoup):
-    name, price, sku, seller = "Not indicated", "Not indicated", "Not indicated", "Not indicated"
-    main_content = soup.find("main", {"role": "main"}) or soup
-    
-    # Try dataLayer first
-    data_layer = parse_data_layer(soup)
-    if data_layer.get("ecommerce", {}).get("detail", {}).get("products"):
-        product = data_layer["ecommerce"]["detail"]["products"][0]
-        name = product.get("name", name)
-        sku = product.get("id", sku)
-        price = product.get("price", price)
-        seller = data_layer.get("dimension23", seller)
-    
-    # Try ld+json
-    products = find_product_objs_from_ldjson(soup)
-    if products:
-        p = products[0]
-        name = p.get("name", name)
-        sku = p.get("sku", sku)
-        if isinstance(p.get("offers"), dict):
-            price = p["offers"].get("price", price)
-            if isinstance(p["offers"].get("seller"), dict):
-                seller = p["offers"]["seller"].get("name", seller)
-    
-    # Fallback to HTML parsing
-    if name == "Not indicated":
-        name = text_or_na(main_content.select_one("h1"))
-    if price == "Not indicated":
-        price = text_or_na(main_content.select_one("span.-b, span.price, div.price, span[data-price], div.-prc"))
-    if seller == "Not indicated":
-        seller_node = main_content.select_one("div.seller-info, div.-seller, p.seller-name, a.seller-link, div.seller-details, span.seller")
-        if seller_node:
-            seller_text = text_or_na(seller_node)
-            if "follow" not in seller_text.lower():
-                seller = seller_text
-        else:
-            for node in main_content.select("p, div, span"):
-                text = node.get_text(strip=True).lower()
-                if "seller" in text and not any(x in text for x in ["follow", "rating", "score"]):
-                    seller = text_or_na(node)
-                    break
-    if seller == "Not indicated" and main_content.select_one('img[alt*="Jumia Express"]'):
-        seller = "Jumia"
-    
-    return name, clean_price(price), sku, seller
-
-def extract_warranty_fields(soup: BeautifulSoup, title_text: str):
-    warranty_title, warranty_specs, warranty_address = "Not indicated", "Not indicated", "Not indicated"
-    main_content = soup.find("main", {"role": "main"}) or soup
-    
-    if re.search(r"(warranty|\b\d+\s?(yr|year|month))", title_text or "", re.I):
-        warranty_title = title_text
-    
-    warranty_heading = main_content.find(lambda t: t.name in ['p', 'div', 'span'] and 'warranty' in t.get_text(strip=True).lower())
-    if warranty_heading and (detail_node := warranty_heading.find_next_sibling()):
-        warranty_specs = text_or_na(detail_node)
-    
-    if warranty_specs == "Not indicated":
-        for tr in main_content.select("div.-pdp-add-info tr, table.specifications tr, div.-spec"):
-            cells = tr.find_all("td")
-            if len(cells) == 2 and "warranty" in cells[0].get_text(strip=True).lower():
-                warranty_specs = cells[1].get_text(strip=True)
-                break
-    
-    if warranty_specs == "Not indicated":
-        desc = main_content.select_one("div.markup, div.-product-desc, div.description")
-        if desc:
-            desc_text = desc.get_text(strip=True).lower()
-            match = re.search(r'warranty\s*[:\-]?\s*(\d+\s*(year|month|yr|mo)s?\s*(?:warranty)?)', desc_text, re.I)
-            if match:
-                warranty_specs = match.group(0)
-    
-    warranty_address_node = main_content.find(lambda t: t.name in ['p', 'div', 'span'] and 'warranty address' in t.get_text(strip=True).lower())
-    if warranty_address_node:
-        warranty_address = text_or_na(warranty_address_node.find_next_sibling() or warranty_address_node)
-    
-    return warranty_title, warranty_specs, warranty_address
-
-def parse_product(url: str, proxy=None):
-    html_content = fetch_page(url, proxy)
-    if not html_content:
-        return {col: "Error fetching page" for col in ["Product Title", "SKU", "Seller", "Price", "Warranty Title", "Warranty (Specs)", "Warranty Address"]} | {"Product URL": url}
-    soup = BeautifulSoup(html_content, "lxml")
-    name, price, sku, seller = extract_basic_fields(soup)
-    w_title, w_specs, w_addr = extract_warranty_fields(soup, name)
-    return {
-        "Product Title": name or "Not indicated",
-        "SKU": sku or "Not indicated",
-        "Seller": seller or "Not indicated",
-        "Price": price or "Not indicated",
-        "Warranty Title": w_title or "Not indicated",
-        "Warranty (Specs)": w_specs or "Not indicated",
-        "Warranty Address": w_addr or "Not indicated",
-        "Product URL": url,
-    }
-
-# -----------------------------
-# Streamlit UI
-# -----------------------------
-st.set_page_config(page_title="Jumia Warranty Scraper", layout="wide")
-st.title("Jumia Warranty Scraper")
-st.caption("Scrapes product details from any Jumia Kenya category page. Enter a category URL and optional proxy settings.")
-
-category_url = st.text_input("Enter Jumia category URL", value="https://www.jumia.co.ke/phones-tablets/", placeholder="e.g., https://www.jumia.co.ke/fashion/ or https://www.jumia.co.ke/baby-products/")
-proxy = st.text_input("Proxy (optional, format: http://user:pass@host:port)", placeholder="Leave blank for no proxy")
-debug_mode = st.checkbox("Enable Debug Mode (logs raw HTML for failed pages)")
-
-if st.button("Scrape Category"):
-    try:
-        parsed_url = urlparse(category_url)
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        if not all([parsed_url.scheme, parsed_url.netloc, "jumia.co.ke" in base_url]) or "product" in parsed_url.path.lower():
-            raise ValueError("Invalid URL. Please enter a valid Jumia category URL (e.g., https://www.jumia.co.ke/electronics/).")
-        if any(excl in parsed_url.path.lower() for excl in EXCLUDED_SUBCATS):
-            raise ValueError(f"Invalid category URL. URLs containing {', '.join(EXCLUDED_SUBCATS)} are not supported.")
-    except (ValueError, AttributeError) as e:
-        st.error(str(e))
-        st.stop()
-
-    st.subheader("Step 1 — Collecting product links")
-    link_status = st.empty()
-    with st.spinner("Collecting product links… This may take a moment."):
-        links = get_product_links(category_url, base_url, link_status, proxy)
-    
-    if not links:
-        st.error(
-            "No product URLs found. Possible causes:\n"
-            "- The category URL may be incorrect or empty.\n"
-            "- The website may have blocked the request (try using a proxy or running locally).\n"
-            "- The HTML structure may have changed (enable Debug Mode to inspect HTML).\n"
-            "Please check the URL or try again later."
-        )
-        if debug_mode:
-            html_content = fetch_page(category_url, proxy)
-            if html_content:
-                st.text_area("Debug: Raw HTML", html_content[:5000], height=300)
-        st.stop()
-    
-    st.success(f"Found {len(links)} product URLs.")
-    st.subheader("Step 2 — Scraping product pages")
-    prog = st.progress(0.0)
-    status = st.empty()
-    results = []
-    total = len(links)
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = {ex.submit(parse_product, u, proxy): u for u in links}
-        for i, fut in enumerate(as_completed(futures)):
-            result = fut.result()
-            results.append(result)
-            prog.progress((i + 1) / total)
-            status.text(f"Scraped {i + 1}/{total}")
-            if debug_mode and "Error fetching page" in result.values():
-                html_content = fetch_page(result["Product URL"], proxy)
-                if html_content:
-                    st.text_area(f"Debug: Raw HTML for {result['Product URL']}", html_content[:5000], height=300)
-    
-    st.success("Scraping complete!")
-    df = pd.DataFrame(results)
-    for col in ["Product Title", "SKU", "Seller", "Price", "Warranty Title", "Warranty (Specs)", "Warranty Address"]:
-        df[col] = df[col].apply(lambda x: str(x).strip() if x and str(x).strip() else "Not indicated")
-    st.dataframe(df, use_container_width=True)
-    
-    try:
-        import xlsxwriter
-        @st.cache_data
-        def to_excel_bytes(frame: pd.DataFrame) -> bytes:
-            buf = BytesIO()
-            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                frame.to_excel(writer, index=False, sheet_name="Products")
-            return buf.getvalue()
-        st.download_button("📥 Download Excel", to_excel_bytes(df), "jumia_products.xlsx")
-    except ImportError:
-        st.error("Excel download unavailable: xlsxwriter module not found. Using CSV download instead.")
-    
-    st.download_button("📥 Download CSV", df.to_csv(index=False), "jumia_products.csv")
+else:
+    st.warning("No products have been added yet. Fill out the form above to begin generating your CSV.")
