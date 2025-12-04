@@ -4,14 +4,16 @@ import re
 import base64
 import os
 
-# --- IMPORT QUILL (Only for Full Description now) ---
+# --- IMPORT QUILL ---
 try:
     from streamlit_quill import st_quill
 except ImportError:
     st.error("Please run: pip install streamlit-quill")
     st.stop()
 
-# --- CONFIGURATION ---
+# --- APP CONFIGURATION ---
+st.set_page_config(layout="wide", page_title="Product Data Generator")
+
 FILE_NAME_CSV = 'cats.csv' 
 DEFAULT_BRAND = 'Generic'
 DEFAULT_COLOR = ''
@@ -31,28 +33,48 @@ TEMPLATE_DATA = {
     'shipment_type': 'Own Warehouse',
 }
 
+# --- INITIALIZE SESSION STATE (Prevents Warnings) ---
+if 'products' not in st.session_state:
+    st.session_state.products = []
+
+# We initialize these ONCE. The widgets will read from these keys.
+# This removes the need for 'value=' inside the widget, fixing the warning.
+defaults = {
+    'dept_selector': "Select Department",
+    'cat_selector_a': DEFAULT_CATEGORY_PATH,
+    'cat_selector_b': DEFAULT_CATEGORY_PATH,
+    'search_query': "",
+    'prod_name': "",
+    'prod_brand': DEFAULT_BRAND,
+    'prod_color': DEFAULT_COLOR,
+    'prod_material': DEFAULT_MATERIAL,
+    'prod_short': "",
+    'prod_in_box': "",
+    'custom_col_name': "",
+    'custom_col_val': "",
+    'reset_success': False # Flag for the message
+}
+
+for key, val in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
 # --- HELPER FUNCTIONS ---
 
 def hard_reset():
     """Clears the product list AND resets all widget states."""
     st.session_state.products = []
     
-    # Reset Dropdowns
-    if 'dept_selector' in st.session_state: st.session_state['dept_selector'] = "Select Department"
-    if 'cat_selector_a' in st.session_state: st.session_state['cat_selector_a'] = DEFAULT_CATEGORY_PATH
-    if 'cat_selector_b' in st.session_state: st.session_state['cat_selector_b'] = DEFAULT_CATEGORY_PATH
-    
-    # Reset Text Inputs
-    keys_to_clear = [
-        'search_query', 'prod_name', 'prod_brand', 'prod_color', 
-        'prod_material', 'prod_short', 'prod_in_box', 
-        'custom_col_name', 'custom_col_val'
-    ]
-    for key in keys_to_clear:
-        if key in st.session_state: st.session_state[key] = ""
-    
-    # Clear Quill Editor
+    # Reset all keys to default values
+    for key, val in defaults.items():
+        if key in st.session_state:
+            st.session_state[key] = val
+            
+    # Clear Quill Editor (Delete key forces reset)
     if 'quill_full_html' in st.session_state: del st.session_state['quill_full_html']
+    
+    # Trigger the success message
+    st.session_state['reset_success'] = True
 
 @st.cache_data
 def load_category_data():
@@ -68,11 +90,9 @@ def load_category_data():
         return pd.DataFrame(), {}, [], []
 
     if not df.empty:
-        # Clean Data
         for col in ['name', 'category', 'categories']:
             if col in df.columns: df[col] = df[col].str.strip()
 
-        # Extract Root
         def get_root(path):
             if pd.isna(path): return "Other"
             parts = str(path).split('\\')
@@ -86,7 +106,6 @@ def load_category_data():
     return pd.DataFrame(), {}, [], []
 
 def format_to_html_list(text):
-    """Converts plain text lines into an HTML unordered list."""
     if not text: return ''
     lines = [line.strip() for line in text.split('\n')]
     list_items = [f'    <li>{line}</li>' for line in lines if line]
@@ -135,19 +154,20 @@ def get_csv_download_link(df):
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">**Download Generated CSV File: {filename}**</a>'
     return href
 
-# --- APP LAYOUT ---
-st.set_page_config(layout="wide", page_title="Product Data Generator")
-
-# --- SIDEBAR (TOTAL RESET) ---
+# --- SIDEBAR (Simple Reset) ---
 with st.sidebar:
     st.header("⚙️ Options")
-    st.info("Finished with this batch? Click below to fully reset the app.")
-    st.button("🗑️ Start New Batch (Reset All)", on_click=hard_reset, type="primary")
+    
+    # The Reset Button
+    st.button("🗑️ Reset All", on_click=hard_reset, type="primary")
+    
+    # The "Resetted" Message
+    if st.session_state.get('reset_success'):
+        st.success("Resetted")
+        # Turn off flag so it disappears on next interaction (optional)
+        st.session_state['reset_success'] = False
 
 st.title("📦 Product Data Generator")
-
-if 'products' not in st.session_state:
-    st.session_state.products = []
 
 # --- LOAD DATA ---
 cat_df, path_to_code, root_list = load_category_data()
@@ -218,14 +238,15 @@ with st.form(key='product_form'):
     with col_name:
         new_name = st.text_input("Product Name", placeholder="e.g., 10PCS Refrigerator Bags", key='prod_name')
     with col_brand:
-        new_brand = st.text_input("Brand", value=DEFAULT_BRAND, key='prod_brand')
+        # NOTICE: No 'value=' parameter here. It uses session_state['prod_brand'] automatically.
+        new_brand = st.text_input("Brand", key='prod_brand')
 
     st.subheader("Optional Attributes")
     col_color, col_material = st.columns(2)
     with col_color:
-        new_color = st.text_input("Color", value=DEFAULT_COLOR, key='prod_color')
+        new_color = st.text_input("Color", key='prod_color')
     with col_material:
-        new_material = st.text_input("Main Material", value=DEFAULT_MATERIAL, key='prod_material')
+        new_material = st.text_input("Main Material", key='prod_material')
         
     st.markdown("---")
 
@@ -238,12 +259,11 @@ with st.form(key='product_form'):
         key='quill_full_html'
     )
 
-    # --- EDITOR 2: SHORT DESCRIPTION (Plain Text -> Auto-Bullets) ---
+    # --- EDITOR 2: SHORT DESCRIPTION (Text Area) ---
     st.markdown("---")
     st.subheader("Short Description (Highlights)")
     st.caption("Paste your list here. The app will automatically turn each line into a bullet point.")
     
-    # Reverted to text_area for easy pasting
     short_desc_raw = st.text_area(
         "Enter highlights (one per line)", 
         height=150, 
@@ -281,20 +301,19 @@ if submit_button:
     else:
         generated_sku = generate_sku_config(new_name)
         
-        # 1. Process Short Description (Auto-Bullet)
+        # 1. Process Short Description
         short_desc_html = format_to_html_list(short_desc_raw)
 
-        # 2. Process Package Content (What's in the Box)
-        # Logic: If empty, use Name. Then apply Auto-Bullets.
+        # 2. Process Package Content
         final_box_content = prod_in_box_raw if prod_in_box_raw.strip() else new_name
         package_content_html = format_to_html_list(final_box_content)
 
         # Base Product Data
         new_product = {
             'name': new_name,
-            'description': full_desc_html,      # Visual Editor HTML
-            'short_description': short_desc_html, # Auto-Bulleted HTML
-            'package_content': package_content_html, # Auto-Bulleted HTML (Box)
+            'description': full_desc_html,      
+            'short_description': short_desc_html, 
+            'package_content': package_content_html, 
             'sku_supplier_config': generated_sku,
             'seller_sku': generated_sku,
             'categories': final_code, 
