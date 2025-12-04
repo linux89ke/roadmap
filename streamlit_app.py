@@ -5,7 +5,6 @@ import base64
 import os
 
 # --- CONFIGURATION ---
-# We prioritize the CSV file now
 FILE_NAME_CSV = 'cats.csv' 
 DEFAULT_BRAND = 'Generic'
 DEFAULT_COLOR = ''
@@ -28,54 +27,50 @@ TEMPLATE_DATA = {
 @st.cache_data
 def load_category_data():
     """
-    Loads category data from CSV with STRICT string handling.
+    Loads category data and extracts 'Root Categories' for easier filtering.
     """
     df = pd.DataFrame()
     
-    # Check if the file exists
     if os.path.exists(FILE_NAME_CSV):
         try:
-            # dtype=str is the secret sauce. 
-            # It forces Python to read "1,1000,1001" exactly as it is written, 
-            # without trying to turn it into a math number.
+            # Read strictly as text
             df = pd.read_csv(FILE_NAME_CSV, dtype=str)
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
-            return pd.DataFrame(), {}, [DEFAULT_CATEGORY_PATH]
+            return pd.DataFrame(), {}, [], []
     else:
-        st.error(f"CRITICAL ERROR: Could not find '{FILE_NAME_CSV}'. Please ensure the file is in the same folder.")
-        return pd.DataFrame(), {}, [DEFAULT_CATEGORY_PATH]
+        st.error(f"CRITICAL ERROR: '{FILE_NAME_CSV}' not found.")
+        return pd.DataFrame(), {}, [], []
 
-    # Process Data
     if not df.empty:
-        # 1. Clean whitespace from all columns
+        # 1. Clean Data
         df['name'] = df['name'].str.strip()
-        
-        # We need the 'category' column for the dropdown (Full Path)
-        # If your CSV header is 'id_catalog_category', 'name', 'category', 'categories'
         if 'category' in df.columns:
             df['category'] = df['category'].str.strip()
         else:
-            st.error("CSV Error: Column 'category' (full path) not found.")
-            return pd.DataFrame(), {}, [DEFAULT_CATEGORY_PATH]
+            return pd.DataFrame(), {}, [], []
 
-        # Ensure codes are clean strings
         if 'categories' in df.columns:
             df['categories'] = df['categories'].str.strip()
-        else:
-            st.error("CSV Error: Column 'categories' (the code) not found.")
-            return pd.DataFrame(), {}, [DEFAULT_CATEGORY_PATH]
 
-        # 2. Create Lookup Dictionary: Full Path -> Code
-        # We take the values exactly as they are in the CSV.
+        # 2. Extract Root Category (e.g. "Computing" from "Computing\Accessories")
+        # We split by the backslash '\' and take the first part
+        def get_root(path):
+            if pd.isna(path): return "Other"
+            parts = str(path).split('\\')
+            return parts[0] if parts else "Other"
+
+        df['root_category'] = df['category'].apply(get_root)
+
+        # 3. Create Lookup: Full Path -> Code
         path_to_code = df.set_index('category')['categories'].to_dict()
         
-        # 3. Create Dropdown List
-        category_paths = [DEFAULT_CATEGORY_PATH] + df['category'].dropna().unique().tolist()
+        # 4. Get List of Unique Roots for the Filter
+        root_list = sorted(df['root_category'].unique().tolist())
         
-        return df, path_to_code, category_paths
+        return df, path_to_code, root_list
     
-    return pd.DataFrame(), {}, [DEFAULT_CATEGORY_PATH]
+    return pd.DataFrame(), {}, [], []
 
 
 def format_to_html_list(text):
@@ -125,7 +120,6 @@ def get_csv_download_link(df):
         filename_base = cleaned_name.replace(' ', '_').upper()[:30] 
         filename = f"{filename_base}_and_{len(df)-1}_more.csv" if len(df) > 1 else f"{filename_base}.csv"
             
-    # Save using standard CSV settings (pandas handles the quotes for the "1,1000" automatically)
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">**Download Generated CSV File: {filename}**</a>'
@@ -133,13 +127,13 @@ def get_csv_download_link(df):
 
 # --- APP LAYOUT ---
 st.set_page_config(layout="wide", page_title="Product Data Generator")
-st.title("📦 Product Data Generator (CSV Mode)")
+st.title("📦 Product Data Generator")
 
 if 'products' not in st.session_state:
     st.session_state.products = []
 
 # --- LOAD DATA ---
-cat_df, path_to_code, category_paths = load_category_data()
+cat_df, path_to_code, root_list = load_category_data()
 
 # --- INPUT FORM ---
 st.header("1. Enter New Product Details")
@@ -150,9 +144,31 @@ with st.form(key='product_form'):
     with col_brand:
         new_brand = st.text_input("Brand", value=DEFAULT_BRAND)
 
-    # --- SEARCHABLE DROPDOWN (FULL PATH) ---
+    # --- NEW: DEPARTMENT FILTER ---
     st.subheader("Category Selection")
-    selected_category_path = st.selectbox("Select Full Category Path (Type to Search)", options=category_paths)
+    
+    # Step 1: Filter by Department
+    col_filter, col_select = st.columns([1, 2])
+    
+    with col_filter:
+        # Add "All Departments" as the default first option
+        filter_options = ["All Departments"] + root_list
+        selected_root = st.selectbox("1. Filter by Department", options=filter_options)
+    
+    with col_select:
+        # Filter the main list based on Step 1
+        if selected_root == "All Departments":
+            filtered_paths = cat_df['category'].dropna().unique().tolist()
+        else:
+            filtered_paths = cat_df[cat_df['root_category'] == selected_root]['category'].dropna().unique().tolist()
+        
+        # Add default option
+        final_options = [DEFAULT_CATEGORY_PATH] + sorted(filtered_paths)
+        
+        # Step 2: The actual selection
+        selected_category_path = st.selectbox("2. Select Specific Category", options=final_options)
+
+    # -------------------------------
 
     st.subheader("Optional Attributes")
     col_color, col_material = st.columns(2)
@@ -174,7 +190,7 @@ if submit_button:
     elif selected_category_path == DEFAULT_CATEGORY_PATH:
         st.error("Please select a Category.")
     else:
-        # Retrieve the code exactly as it is in the CSV
+        # Retrieve the code
         final_code = path_to_code.get(selected_category_path, '')
         
         generated_sku = generate_sku_config(new_name)
@@ -202,9 +218,7 @@ st.header("2. Generated Product List")
 if st.session_state.products:
     final_df = create_output_df(st.session_state.products)
     
-    # Show preview
     st.dataframe(final_df[['name', 'categories', 'sku_supplier_config']].tail(5), use_container_width=True)
-    
     st.markdown(get_csv_download_link(final_df), unsafe_allow_html=True)
     
     if st.button("🗑️ Clear List"):
