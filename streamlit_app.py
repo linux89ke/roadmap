@@ -24,11 +24,32 @@ TEMPLATE_DATA = {
     'shipment_type': 'Own Warehouse',
 }
 
+# --- RESET FUNCTION ---
+def hard_reset():
+    """
+    Clears the product list AND resets all widget states to defaults.
+    """
+    # 1. Clear the data list
+    st.session_state.products = []
+    
+    # 2. Reset Widgets by setting their session_state keys
+    # Dropdowns
+    if 'dept_selector' in st.session_state: st.session_state['dept_selector'] = "Select Department"
+    if 'cat_selector_a' in st.session_state: st.session_state['cat_selector_a'] = DEFAULT_CATEGORY_PATH
+    if 'cat_selector_b' in st.session_state: st.session_state['cat_selector_b'] = DEFAULT_CATEGORY_PATH
+    
+    # Text Inputs
+    if 'search_query' in st.session_state: st.session_state['search_query'] = ""
+    if 'prod_name' in st.session_state: st.session_state['prod_name'] = ""
+    if 'prod_brand' in st.session_state: st.session_state['prod_brand'] = DEFAULT_BRAND
+    if 'prod_color' in st.session_state: st.session_state['prod_color'] = DEFAULT_COLOR
+    if 'prod_material' in st.session_state: st.session_state['prod_material'] = DEFAULT_MATERIAL
+    if 'prod_desc' in st.session_state: st.session_state['prod_desc'] = ""
+    if 'prod_short' in st.session_state: st.session_state['prod_short'] = ""
+
 @st.cache_data
 def load_category_data():
-    """Loads category data efficiently."""
     df = pd.DataFrame()
-    
     if os.path.exists(FILE_NAME_CSV):
         try:
             df = pd.read_csv(FILE_NAME_CSV, dtype=str)
@@ -54,9 +75,7 @@ def load_category_data():
         root_list = sorted(df['root_category'].unique().tolist())
         
         return df, path_to_code, root_list
-    
     return pd.DataFrame(), {}, [], []
-
 
 def format_to_html_list(text):
     if not text: return ''
@@ -66,22 +85,18 @@ def format_to_html_list(text):
     list_content = '\n'.join(list_items)
     return f'<ul>\n{list_content}\n    </ul>'
 
-
 def generate_sku_config(name):
     if not name: return "GENERATEDSKU_MISSING"
     cleaned_name = re.sub(r'[^\w\s]', '', name).strip()
     words = cleaned_name.split()
     if not words: return "GENERATEDSKU_MISSING"
-    
     start_index = 0
     first_word = words[0].upper()
     if re.search(r'\d', first_word) or 'PCS' in first_word or 'PACK' in first_word:
         start_index = 1
-    
     sku_words = words[start_index:start_index + 3]
     if not sku_words: sku_words = words[0:1]  
     return '_'.join(sku_words).upper()
-
 
 def create_output_df(product_list):
     columns = [
@@ -95,7 +110,6 @@ def create_output_df(product_list):
     df = pd.DataFrame(product_list, columns=columns)
     return df.fillna('', inplace=False)
 
-
 def get_csv_download_link(df):
     if df.empty:
         filename = "empty.csv"
@@ -104,7 +118,6 @@ def get_csv_download_link(df):
         cleaned_name = re.sub(r'[^a-zA-Z0-9\s]', '', raw_name).strip()
         filename_base = cleaned_name.replace(' ', '_').upper()[:30] 
         filename = f"{filename_base}_and_{len(df)-1}_more.csv" if len(df) > 1 else f"{filename_base}.csv"
-            
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">**Download Generated CSV File: {filename}**</a>'
@@ -113,15 +126,13 @@ def get_csv_download_link(df):
 # --- APP LAYOUT ---
 st.set_page_config(layout="wide", page_title="Product Data Generator")
 
-# --- SIDEBAR (RESET BUTTON) ---
+# --- SIDEBAR (TOTAL RESET) ---
 with st.sidebar:
     st.header("⚙️ Options")
-    st.info("When you are done exporting your CSV, click below to clear everything and start a new file.")
+    st.info("Finished with this batch? Click below to fully reset the app (List, Form, and Categories).")
     
-    # THE RESET BUTTON
-    if st.button("🗑️ Start New Batch (Clear All)", type="primary"):
-        st.session_state.products = []
-        st.rerun()
+    # We use a callback function to ensure state is cleared BEFORE the rerun
+    st.button("🗑️ Start New Batch (Reset All)", on_click=hard_reset, type="primary")
 
 st.title("📦 Product Data Generator")
 
@@ -141,13 +152,24 @@ selected_category_path = DEFAULT_CATEGORY_PATH
 with tab1:
     col_dept, col_cat = st.columns([1, 2])
     with col_dept:
-        selected_root = st.selectbox("Step A: Choose Department", options=["Select Department"] + root_list)
+        # Added key='dept_selector' so we can reset it
+        selected_root = st.selectbox(
+            "Step A: Choose Department", 
+            options=["Select Department"] + root_list,
+            key='dept_selector' 
+        )
     
     with col_cat:
         if selected_root and selected_root != "Select Department":
             filtered_paths = cat_df[cat_df['root_category'] == selected_root]['category'].dropna().unique().tolist()
             filtered_paths = sorted(filtered_paths)
-            cat_selection_a = st.selectbox("Step B: Select Specific Category", options=[DEFAULT_CATEGORY_PATH] + filtered_paths)
+            
+            # Added key='cat_selector_a'
+            cat_selection_a = st.selectbox(
+                "Step B: Select Specific Category", 
+                options=[DEFAULT_CATEGORY_PATH] + filtered_paths,
+                key='cat_selector_a'
+            )
             if cat_selection_a != DEFAULT_CATEGORY_PATH:
                 selected_category_path = cat_selection_a
         else:
@@ -155,12 +177,22 @@ with tab1:
 
 # --- METHOD B: GLOBAL SEARCH ---
 with tab2:
-    search_query = st.text_input("Type a keyword (e.g. 'HDMI', 'Baby', 'Dress')")
+    # Added key='search_query'
+    search_query = st.text_input(
+        "Type a keyword (e.g. 'HDMI', 'Baby', 'Dress')",
+        key='search_query'
+    )
+    
     if search_query:
         search_results = cat_df[cat_df['category'].str.contains(search_query, case=False, na=False)]
         found_paths = sorted(search_results['category'].unique().tolist())
         if found_paths:
-            cat_selection_b = st.selectbox(f"Found {len(found_paths)} results:", options=[DEFAULT_CATEGORY_PATH] + found_paths)
+            # Added key='cat_selector_b'
+            cat_selection_b = st.selectbox(
+                f"Found {len(found_paths)} results:", 
+                options=[DEFAULT_CATEGORY_PATH] + found_paths,
+                key='cat_selector_b'
+            )
             if cat_selection_b != DEFAULT_CATEGORY_PATH:
                 selected_category_path = cat_selection_b
         else:
@@ -179,23 +211,24 @@ else:
 st.markdown("---")
 st.header("2. Product Details")
 
+# NOTE: We use st.form to group inputs, but we assign KEYS to them for resetting.
 with st.form(key='product_form'):
     col_name, col_brand = st.columns([3, 1])
     with col_name:
-        new_name = st.text_input("Product Name", placeholder="e.g., 10PCS Refrigerator Bags")
+        new_name = st.text_input("Product Name", placeholder="e.g., 10PCS Refrigerator Bags", key='prod_name')
     with col_brand:
-        new_brand = st.text_input("Brand", value=DEFAULT_BRAND)
+        new_brand = st.text_input("Brand", value=DEFAULT_BRAND, key='prod_brand')
 
     st.subheader("Optional Attributes")
     col_color, col_material = st.columns(2)
     with col_color:
-        new_color = st.text_input("Color", value=DEFAULT_COLOR)
+        new_color = st.text_input("Color", value=DEFAULT_COLOR, key='prod_color')
     with col_material:
-        new_material = st.text_input("Main Material", value=DEFAULT_MATERIAL)
+        new_material = st.text_input("Main Material", value=DEFAULT_MATERIAL, key='prod_material')
         
     st.markdown("---")
-    new_description = st.text_area("Full Description")
-    new_short_description_raw = st.text_area("Short Description (Highlights)", height=150)
+    new_description = st.text_area("Full Description", key='prod_desc')
+    new_short_description_raw = st.text_area("Short Description (Highlights)", height=150, key='prod_short')
     
     submit_button = st.form_submit_button(label='➕ Add Product to List')
 
