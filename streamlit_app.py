@@ -4,7 +4,7 @@ import re
 import base64
 from io import StringIO
 from datetime import datetime
-import numpy as np # Needed for NaN values
+import numpy as np 
 
 # --- CONFIGURATION ---
 CATEGORIES_FILE = 'cats.xlsx'
@@ -38,7 +38,8 @@ def load_category_data(file_path):
         # 2. Clean 'name' column for better searching/mapping
         cat_df['name'] = cat_df['name'].astype(str).str.strip()
         
-        # 3. Create dictionaries for instant lookup (Category Name -> Path/Code)
+        # 3. Create dictionaries for instant lookup 
+        # Note: We still map to the raw code here, and format it later.
         name_to_path = cat_df.set_index('name')['category'].to_dict()
         name_to_code = cat_df.set_index('name')['categories'].to_dict()
         
@@ -69,7 +70,6 @@ def format_to_html_list(text):
         return ''
         
     list_content = '\n'.join(list_items)
-    # Using four spaces for indentation to match your original formatting style
     return f'<ul>\n{list_content}\n    </ul>'
 
 
@@ -106,10 +106,11 @@ def generate_sku_config(name):
 
 def create_output_df(product_list):
     """Converts a list of product dictionaries into a final DataFrame."""
-    # NOTE: Added 'category_path' and 'category_code' columns
+    # FINAL REQUIRED COLUMNS LIST: Removed 'category_path' and renamed 'category_code' to 'categories'
     columns = [
-        'sku_supplier_config', 'seller_sku', 'name', 'brand', 'category_path', 
-        'category_code', 'product_weight', 'package_type', 'package_quantities', 
+        'sku_supplier_config', 'seller_sku', 'name', 'brand', 
+        'categories', # <-- FINAL NAME
+        'product_weight', 'package_type', 'package_quantities', 
         'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 
         'description', 'short_description', 'package_content', 'supplier', 
         'shipment_type'
@@ -122,21 +123,18 @@ def create_output_df(product_list):
 def get_csv_download_link(df):
     """Generates a link to download the DataFrame as a CSV file with a descriptive filename."""
     
-    # 1. Determine Filename based on the first product's name
     if df.empty:
         filename = "empty_product_export.csv"
     else:
-        # Clean the first product's name for a safe filename
         raw_name = df.iloc[0]['name']
         cleaned_name = re.sub(r'[^a-zA-Z0-9\s]', '', raw_name).strip()
-        filename_base = cleaned_name.replace(' ', '_').upper()[:30] # Truncate for safety
+        filename_base = cleaned_name.replace(' ', '_').upper()[:30] 
 
         if len(df) > 1:
             filename = f"{filename_base}_and_{len(df)-1}_more.csv"
         else:
             filename = f"{filename_base}.csv"
             
-    # 2. Generate download link
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">**Download Generated CSV File: {filename}**</a>'
@@ -163,10 +161,8 @@ with st.expander("ℹ️ Generation Logic", expanded=False):
     | Field | Generation Logic | Default Value (If Optional Field is Empty) |
     | :--- | :--- | :--- |
     | **`sku_supplier_config` & `seller_sku`** | **Automated:** Skips leading quantity (e.g., '10PCS'), then takes the **next three words** and joins them with underscores. | N/A |
-    | **`category_path` & `category_code`** | **Lookup:** Fetched automatically from `cats.xlsx` based on the selected **Category Name**. | N/A |
+    | **`categories`** | **Lookup:** Fetched from `cats.xlsx` and formatted with commas (e.g., `110,001,001`). | N/A |
     | **`package_content`** | **Full Name** entered by the user. | N/A |
-    | **`short_description`** | Line-by-line input converted to HTML list (`<ul><li>...</li></ul>`). | N/A |
-    | **`brand`** | User Input (Optional) | **`Generic`** |
     """)
 
 # --- Input Form ---
@@ -233,17 +229,28 @@ if submit_button:
         st.stop()
         
     # 1. Category Lookup (Fast and instant using dictionaries)
-    category_path = st.session_state.name_to_path.get(selected_category_name, '')
-    category_code = st.session_state.name_to_code.get(selected_category_name, '')
+    category_raw_code = st.session_state.name_to_code.get(selected_category_name, '')
     
-    # 2. Generate dynamic fields
+    # 2. FORMATTING THE CATEGORY CODE (The required change)
+    if category_raw_code:
+        # Convert to string and format with commas (e.g., 110001001 -> 110,001,001)
+        # Assuming the code is always a number-like string
+        try:
+            formatted_code = f"{int(category_raw_code):,}"
+        except ValueError:
+            # Fallback if the code isn't purely numeric
+            formatted_code = str(category_raw_code)
+    else:
+        formatted_code = ''
+    
+    # 3. Generate dynamic fields
     generated_sku = generate_sku_config(new_name)
     generated_package_content = new_name
     
-    # 3. Format HTML list
+    # 4. Format HTML list
     new_short_description_html = format_to_html_list(new_short_description_raw)
     
-    # 4. Combine with static data and inputs
+    # 5. Combine with static data and inputs
     new_product = {
         'name': new_name,
         'description': new_description,
@@ -254,9 +261,8 @@ if submit_button:
         'seller_sku': generated_sku,
         'package_content': generated_package_content,
         
-        # New Category Fields
-        'category_path': category_path,
-        'category_code': category_code,
+        # New Category Field (Renamed and Formatted)
+        'categories': formatted_code, # <-- Renamed to 'categories' and formatted
         
         # Editable/Default Fields
         'brand': new_brand if new_brand else DEFAULT_BRAND,
@@ -264,10 +270,12 @@ if submit_button:
         'main_material': new_material if new_material else DEFAULT_MATERIAL,
         
         **TEMPLATE_DATA # Other static fields
+        
+        # NOTE: category_path is intentionally excluded from the final dictionary
     }
     
     st.session_state.products.append(new_product)
-    st.success(f"Added product: **{new_name}** | Category: **{selected_category_name}** | Code: **{category_code}**")
+    st.success(f"Added product: **{new_name}** | Category Code: **{formatted_code}**")
 
 # --- Results and Download ---
 st.header("2. Generated Product List")
@@ -275,10 +283,13 @@ st.header("2. Generated Product List")
 if st.session_state.products:
     st.info(f"Total products added: **{len(st.session_state.products)}**")
     
+    # Create final DataFrame (which excludes category_path)
     final_df = create_output_df(st.session_state.products)
     
     st.subheader("Preview of Generated Data (Last 5 Products)")
-    st.dataframe(final_df.tail(5), use_container_width=True)
+    # Show the 'categories' column in the preview
+    preview_cols = ['name', 'brand', 'categories', 'sku_supplier_config']
+    st.dataframe(final_df[preview_cols].tail(5), use_container_width=True)
     
     st.markdown(get_csv_download_link(final_df), unsafe_allow_html=True)
     
