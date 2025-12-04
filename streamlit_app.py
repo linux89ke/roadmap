@@ -5,7 +5,6 @@ import base64
 import os
 
 # --- CONFIGURATION ---
-# Try to find the file automatically (supports .xlsx or .csv)
 FILE_NAME_XLSX = 'cats.xlsx'
 FILE_NAME_CSV = 'cats.xlsx - Sheet1.csv' 
 DEFAULT_BRAND = 'Generic'
@@ -13,7 +12,7 @@ DEFAULT_COLOR = ''
 DEFAULT_MATERIAL = '-'
 DEFAULT_CATEGORY_NAME = 'Select a Category'
 
-# --- STATIC TEMPLATE DATA ---
+# --- TEMPLATE DATA ---
 TEMPLATE_DATA = {
     'product_weight': 1,
     'package_type': '', 
@@ -29,50 +28,57 @@ TEMPLATE_DATA = {
 @st.cache_data
 def load_category_data():
     """
-    Loads category data from Excel or CSV. 
-    Uses caching so it only runs once per session (FAST).
+    Loads category data and forces strict integer formatting with commas.
+    Example: 110001001 -> "110,001,001"
     """
     df = pd.DataFrame()
     
-    # 1. Try Loading Excel
+    # 1. Attempt to load the file
     if os.path.exists(FILE_NAME_XLSX):
         try:
-            df = pd.read_excel(FILE_NAME_XLSX)
+            # Read as object to prevent initial float conversion errors if possible
+            df = pd.read_excel(FILE_NAME_XLSX, dtype={'categories': object})
         except Exception as e:
             st.error(f"Error reading Excel: {e}")
-            return pd.DataFrame(), {}, {}, [DEFAULT_CATEGORY_NAME]
-            
-    # 2. Try Loading CSV (if Excel not found)
+            return pd.DataFrame(), {}, [DEFAULT_CATEGORY_NAME]
     elif os.path.exists(FILE_NAME_CSV):
         try:
-            df = pd.read_csv(FILE_NAME_CSV)
+            # Read as object (string) to preserve text content
+            df = pd.read_csv(FILE_NAME_CSV, dtype={'categories': object})
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
-            return pd.DataFrame(), {}, {}, [DEFAULT_CATEGORY_NAME]
+            return pd.DataFrame(), {}, [DEFAULT_CATEGORY_NAME]
     else:
-        st.error(f"CRITICAL ERROR: Could not find '{FILE_NAME_XLSX}' or '{FILE_NAME_CSV}'. Please add the file to the script folder.")
-        return pd.DataFrame(), {}, {}, [DEFAULT_CATEGORY_NAME]
+        st.error(f"CRITICAL ERROR: Could not find '{FILE_NAME_XLSX}' or '{FILE_NAME_CSV}'.")
+        return pd.DataFrame(), {}, [DEFAULT_CATEGORY_NAME]
 
-    # 3. Process Data
+    # 2. Process and Format Data
     if not df.empty:
-        # Clean names
         df['name'] = df['name'].astype(str).str.strip()
         
-        # Clean Categories Code (Handle Float/Scientific Notation)
-        # Your file has numbers like 1.10E+16, we need to make them integers first
-        def clean_code(val):
+        # STRICT FORMATTER FUNCTION
+        def format_code(val):
             try:
-                # Convert float to int (removes decimals), then to string
-                return str(int(float(val)))
+                # Step 1: Convert to string and clean (remove existing commas/spaces)
+                s_val = str(val).replace(',', '').strip()
+                
+                # Step 2: Convert to float first (handles 110001001.0 or 1.1E+8)
+                f_val = float(s_val)
+                
+                # Step 3: Format as Integer with Commas
+                # {:,.0f} -> Comma separator, 0 decimal places
+                return "{:,.0f}".format(f_val)
             except:
+                # If it's not a number (e.g., text code), return as is
                 return str(val)
 
-        df['categories'] = df['categories'].apply(clean_code)
+        # Apply formatting to the column
+        df['categories'] = df['categories'].apply(format_code)
 
-        # Create dictionaries for fast lookup
+        # Create Lookup Dictionary
         name_to_code = df.set_index('name')['categories'].to_dict()
         
-        # Create list for dropdown
+        # Create Dropdown List
         category_names = [DEFAULT_CATEGORY_NAME] + df['name'].unique().tolist()
         
         return df, name_to_code, category_names
@@ -81,7 +87,6 @@ def load_category_data():
 
 
 def format_to_html_list(text):
-    """Converts plain text bullet points into an HTML unordered list."""
     if not text: return ''
     lines = [line.strip() for line in text.split('\n')]
     list_items = [f'    <li>{line}</li>' for line in lines if line]
@@ -91,7 +96,6 @@ def format_to_html_list(text):
 
 
 def generate_sku_config(name):
-    """Generates sku based on the product name logic."""
     if not name: return "GENERATEDSKU_MISSING"
     cleaned_name = re.sub(r'[^\w\s]', '', name).strip()
     words = cleaned_name.split()
@@ -108,10 +112,9 @@ def generate_sku_config(name):
 
 
 def create_output_df(product_list):
-    """Converts a list of product dictionaries into a final DataFrame."""
     columns = [
         'sku_supplier_config', 'seller_sku', 'name', 'brand', 
-        'categories', # Final column name
+        'categories', # This will now hold the formatted string "110,001,001"
         'product_weight', 'package_type', 'package_quantities', 
         'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 
         'description', 'short_description', 'package_content', 'supplier', 
@@ -122,7 +125,6 @@ def create_output_df(product_list):
 
 
 def get_csv_download_link(df):
-    """Generates a link to download the DataFrame as a CSV."""
     if df.empty:
         filename = "empty.csv"
     else:
@@ -131,6 +133,7 @@ def get_csv_download_link(df):
         filename_base = cleaned_name.replace(' ', '_').upper()[:30] 
         filename = f"{filename_base}_and_{len(df)-1}_more.csv" if len(df) > 1 else f"{filename_base}.csv"
             
+    # Save as string (preserving the commas in the 'categories' column)
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">**Download Generated CSV File: {filename}**</a>'
@@ -143,7 +146,7 @@ st.title("📦 Product Data Generator")
 if 'products' not in st.session_state:
     st.session_state.products = []
 
-# --- LOAD DATA (Runs once per session) ---
+# --- LOAD DATA ---
 cat_df, name_to_code, category_names = load_category_data()
 
 # --- INPUT FORM ---
@@ -156,7 +159,6 @@ with st.form(key='product_form'):
         new_brand = st.text_input("Brand", value=DEFAULT_BRAND)
 
     # SEARCHABLE DROPDOWN
-    # Streamlit handles the "Search" logic automatically within the box
     st.subheader("Category Selection")
     selected_category_name = st.selectbox("Select Category (Type to Search)", options=category_names)
 
@@ -180,16 +182,9 @@ if submit_button:
     elif selected_category_name == DEFAULT_CATEGORY_NAME:
         st.error("Please select a Category.")
     else:
-        # GET CODE & FORMAT IT
-        raw_code = name_to_code.get(selected_category_name, '')
+        # Retrieve the pre-formatted code (e.g., "110,001,001")
+        final_code = name_to_code.get(selected_category_name, '')
         
-        # Logic: If it looks like a number, add commas (11000 -> 11,000)
-        # Since we cleaned it to a string string in load_data, we can try int()
-        try:
-            formatted_code = f"{int(raw_code):,}"
-        except:
-            formatted_code = raw_code
-
         generated_sku = generate_sku_config(new_name)
         new_short_description_html = format_to_html_list(new_short_description_raw)
         
@@ -200,7 +195,7 @@ if submit_button:
             'sku_supplier_config': generated_sku,
             'seller_sku': generated_sku,
             'package_content': new_name,
-            'categories': formatted_code, # Use the formatted code
+            'categories': final_code, # Use the correctly formatted code
             'brand': new_brand,
             'color': new_color,
             'main_material': new_material,
@@ -208,14 +203,19 @@ if submit_button:
         }
         
         st.session_state.products.append(new_product)
-        st.success(f"Added: {new_name} | Cat: {formatted_code}")
+        st.success(f"Added: {new_name} | Category Code: {final_code}")
 
 # --- OUTPUT ---
 st.header("2. Generated Product List")
 if st.session_state.products:
     final_df = create_output_df(st.session_state.products)
+    
+    # Show preview
     st.dataframe(final_df[['name', 'categories', 'sku_supplier_config']].tail(5), use_container_width=True)
+    
+    # Download Link
     st.markdown(get_csv_download_link(final_df), unsafe_allow_html=True)
+    
     if st.button("🗑️ Clear List"):
         st.session_state.products = []
         st.rerun()
