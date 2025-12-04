@@ -3,6 +3,11 @@ import pandas as pd
 import re
 import base64
 import os
+try:
+    from streamlit_quill import st_quill
+except ImportError:
+    st.error("Please run: pip install streamlit-quill")
+    st.stop()
 
 # --- CONFIGURATION ---
 FILE_NAME_CSV = 'cats.csv' 
@@ -27,29 +32,28 @@ TEMPLATE_DATA = {
 # --- RESET FUNCTION ---
 def hard_reset():
     """
-    RESET PRODUCT DETAILS
+    Clears the product list AND resets all widget states to defaults.
     """
-    # 1. Clear the data list
     st.session_state.products = []
     
-    # 2. Reset Widgets by setting their session_state keys
-    # Dropdowns
+    # Reset Widgets
     if 'dept_selector' in st.session_state: st.session_state['dept_selector'] = "Select Department"
     if 'cat_selector_a' in st.session_state: st.session_state['cat_selector_a'] = DEFAULT_CATEGORY_PATH
     if 'cat_selector_b' in st.session_state: st.session_state['cat_selector_b'] = DEFAULT_CATEGORY_PATH
     
-    # Text Inputs
     if 'search_query' in st.session_state: st.session_state['search_query'] = ""
     if 'prod_name' in st.session_state: st.session_state['prod_name'] = ""
     if 'prod_brand' in st.session_state: st.session_state['prod_brand'] = DEFAULT_BRAND
     if 'prod_color' in st.session_state: st.session_state['prod_color'] = DEFAULT_COLOR
     if 'prod_material' in st.session_state: st.session_state['prod_material'] = DEFAULT_MATERIAL
-    if 'prod_desc' in st.session_state: st.session_state['prod_desc'] = ""
-    if 'prod_short' in st.session_state: st.session_state['prod_short'] = ""
     
-    # Custom Columns Reset
     if 'custom_col_name' in st.session_state: st.session_state['custom_col_name'] = ""
     if 'custom_col_val' in st.session_state: st.session_state['custom_col_val'] = ""
+    
+    # Clear BOTH Quill Editors
+    # (Streamlit components sometimes need a manual key clear or just empty string assignment)
+    if 'quill_full_html' in st.session_state: st.session_state['quill_full_html'] = ""
+    if 'quill_short_html' in st.session_state: st.session_state['quill_short_html'] = ""
 
 @st.cache_data
 def load_category_data():
@@ -81,14 +85,6 @@ def load_category_data():
         return df, path_to_code, root_list
     return pd.DataFrame(), {}, [], []
 
-def format_to_html_list(text):
-    if not text: return ''
-    lines = [line.strip() for line in text.split('\n')]
-    list_items = [f'    <li>{line}</li>' for line in lines if line]
-    if not list_items: return ''
-    list_content = '\n'.join(list_items)
-    return f'<ul>\n{list_content}\n    </ul>'
-
 def generate_sku_config(name):
     if not name: return "GENERATEDSKU_MISSING"
     cleaned_name = re.sub(r'[^\w\s]', '', name).strip()
@@ -103,7 +99,6 @@ def generate_sku_config(name):
     return '_'.join(sku_words).upper()
 
 def create_output_df(product_list):
-    # 1. Define the Standard Order of columns
     standard_columns = [
         'sku_supplier_config', 'seller_sku', 'name', 'brand', 
         'categories', 
@@ -112,16 +107,10 @@ def create_output_df(product_list):
         'description', 'short_description', 'package_content', 'supplier', 
         'shipment_type'
     ]
-    
-    # 2. Create DataFrame (This automatically picks up any new custom keys)
     df = pd.DataFrame(product_list)
-    
-    # 3. Organize Columns: Standard First + New Custom Columns Last
     existing_standard = [c for c in standard_columns if c in df.columns]
     custom_columns = [c for c in df.columns if c not in standard_columns]
-    
     final_order = existing_standard + custom_columns
-    
     return df[final_order].fillna('')
 
 def get_csv_download_link(df):
@@ -138,16 +127,15 @@ def get_csv_download_link(df):
     return href
 
 # --- APP LAYOUT ---
-st.set_page_config(layout="wide", page_title="bpg")
+st.set_page_config(layout="wide", page_title="Product Data Generator")
 
 # --- SIDEBAR (TOTAL RESET) ---
 with st.sidebar:
     st.header("⚙️ Options")
-    st.info("Finished with this product? Click below to fully reset (List, Form, and Categories).")
-    
-    st.button("Start New Batch (Reset All)", on_click=hard_reset, type="primary")
+    st.info("Finished with this batch? Click below to fully reset the app.")
+    st.button("🗑️ Start New Batch (Reset All)", on_click=hard_reset, type="primary")
 
-st.title("BPG")
+st.title("📦 Product Data Generator")
 
 if 'products' not in st.session_state:
     st.session_state.products = []
@@ -170,12 +158,10 @@ with tab1:
             options=["Select Department"] + root_list,
             key='dept_selector' 
         )
-    
     with col_cat:
         if selected_root and selected_root != "Select Department":
             filtered_paths = cat_df[cat_df['root_category'] == selected_root]['category'].dropna().unique().tolist()
             filtered_paths = sorted(filtered_paths)
-            
             cat_selection_a = st.selectbox(
                 "Step B: Select Specific Category", 
                 options=[DEFAULT_CATEGORY_PATH] + filtered_paths,
@@ -192,7 +178,6 @@ with tab2:
         "Type a keyword (e.g. 'HDMI', 'Baby', 'Dress')",
         key='search_query'
     )
-    
     if search_query:
         search_results = cat_df[cat_df['category'].str.contains(search_query, case=False, na=False)]
         found_paths = sorted(search_results['category'].unique().tolist())
@@ -207,7 +192,6 @@ with tab2:
         else:
             st.warning("No categories found matching that keyword.")
 
-# Display Selected Category
 if selected_category_path != DEFAULT_CATEGORY_PATH:
     final_code = path_to_code.get(selected_category_path, '')
     st.success(f"✅ Selected: **{selected_category_path}** (Code: {final_code})")
@@ -235,37 +219,52 @@ with st.form(key='product_form'):
         new_material = st.text_input("Main Material", value=DEFAULT_MATERIAL, key='prod_material')
         
     st.markdown("---")
-    new_description = st.text_area("Full Description", key='prod_desc')
-    new_short_description_raw = st.text_area("Short Description (Highlights)", height=150, key='prod_short')
+
+    # --- EDITOR 1: FULL DESCRIPTION ---
+    st.subheader("Full Description")
+    st.caption("Detailed product information.")
+    full_desc_html = st_quill(
+        placeholder="Enter full description here...",
+        html=True,
+        key='quill_full_html',
+        defaults="" 
+    )
+
+    # --- EDITOR 2: SHORT DESCRIPTION ---
+    st.subheader("Short Description (Highlights)")
+    st.caption("Key bullet points.")
+    short_desc_html = st_quill(
+        placeholder="Type bullet points here...",
+        html=True,
+        key='quill_short_html',
+        defaults="" 
+    )
     
-    # --- NEW: CUSTOM COLUMN SECTION ---
+    # --- CUSTOM COLUMN SECTION ---
     st.markdown("---")
     st.subheader("Add Custom Column (Optional)")
-    st.caption("Add a specific field for this product (e.g. 'Warranty', 'Expiration').")
     c_custom_1, c_custom_2 = st.columns(2)
     with c_custom_1:
         custom_col_name = st.text_input("Column Name", placeholder="e.g. Warranty", key='custom_col_name')
     with c_custom_2:
         custom_col_val = st.text_input("Value", placeholder="e.g. 2 Years", key='custom_col_val')
-    # ----------------------------------
     
     st.markdown("---")
     submit_button = st.form_submit_button(label='➕ Add Product to List')
 
 if submit_button:
-    if not new_name or not new_description or not new_short_description_raw:
-        st.error("Please fill in Name, Description, and Short Description.")
+    if not new_name:
+        st.error("Product Name is required.")
     elif selected_category_path == DEFAULT_CATEGORY_PATH or not final_code:
         st.error("Please go back to Section 1 and select a valid Category.")
     else:
         generated_sku = generate_sku_config(new_name)
-        new_short_description_html = format_to_html_list(new_short_description_raw)
         
         # Base Product Data
         new_product = {
             'name': new_name,
-            'description': new_description,
-            'short_description': new_short_description_html,
+            'description': full_desc_html,    # Using Quill HTML
+            'short_description': short_desc_html, # Using Quill HTML
             'sku_supplier_config': generated_sku,
             'seller_sku': generated_sku,
             'package_content': new_name,
@@ -276,7 +275,6 @@ if submit_button:
             **TEMPLATE_DATA
         }
         
-        # Add Custom Column if provided
         if custom_col_name and custom_col_val:
             new_product[custom_col_name] = custom_col_val
         
@@ -289,13 +287,11 @@ st.header("3. Download Data")
 if st.session_state.products:
     final_df = create_output_df(st.session_state.products)
     
-    # Preview logic to show custom columns if they exist
     cols_to_show = ['name', 'categories']
     if custom_col_name and custom_col_name in final_df.columns:
         cols_to_show.append(custom_col_name)
     
     st.dataframe(final_df.tail(5), use_container_width=True)
     st.markdown(get_csv_download_link(final_df), unsafe_allow_html=True)
-    
 else:
     st.info("Products added to the list will appear here.")
