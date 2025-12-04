@@ -26,14 +26,11 @@ TEMPLATE_DATA = {
 
 @st.cache_data
 def load_category_data():
-    """
-    Loads category data efficiently.
-    """
+    """Loads category data efficiently."""
     df = pd.DataFrame()
     
     if os.path.exists(FILE_NAME_CSV):
         try:
-            # Read strictly as text
             df = pd.read_csv(FILE_NAME_CSV, dtype=str)
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
@@ -43,23 +40,17 @@ def load_category_data():
         return pd.DataFrame(), {}, [], []
 
     if not df.empty:
-        # 1. Clean Data
         if 'name' in df.columns: df['name'] = df['name'].str.strip()
         if 'category' in df.columns: df['category'] = df['category'].str.strip()
         if 'categories' in df.columns: df['categories'] = df['categories'].str.strip()
 
-        # 2. Extract Root Category (e.g. "Computing" from "Computing\Accessories")
         def get_root(path):
             if pd.isna(path): return "Other"
             parts = str(path).split('\\')
             return parts[0] if parts else "Other"
 
         df['root_category'] = df['category'].apply(get_root)
-
-        # 3. Create Lookup: Full Path -> Code
         path_to_code = df.set_index('category')['categories'].to_dict()
-        
-        # 4. Get List of Unique Roots for the Filter
         root_list = sorted(df['root_category'].unique().tolist())
         
         return df, path_to_code, root_list
@@ -121,6 +112,17 @@ def get_csv_download_link(df):
 
 # --- APP LAYOUT ---
 st.set_page_config(layout="wide", page_title="Product Data Generator")
+
+# --- SIDEBAR (RESET BUTTON) ---
+with st.sidebar:
+    st.header("⚙️ Options")
+    st.info("When you are done exporting your CSV, click below to clear everything and start a new file.")
+    
+    # THE RESET BUTTON
+    if st.button("🗑️ Start New Batch (Clear All)", type="primary"):
+        st.session_state.products = []
+        st.rerun()
+
 st.title("📦 Product Data Generator")
 
 if 'products' not in st.session_state:
@@ -129,33 +131,23 @@ if 'products' not in st.session_state:
 # --- LOAD DATA ---
 cat_df, path_to_code, root_list = load_category_data()
 
-# --- 1. CATEGORY SELECTION (Outside Form for Interactivity) ---
+# --- 1. CATEGORY SELECTION ---
 st.header("1. Find Category")
-st.info("Select your category below. This will be applied to the product you enter next.")
-
-# Two tabs for different search methods
 tab1, tab2 = st.tabs(["📂 Browse by Department", "🔍 Global Search"])
 
 selected_category_path = DEFAULT_CATEGORY_PATH
 
-# --- METHOD A: DEPARTMENT FILTER ---
+# --- METHOD A: DEPT FILTER ---
 with tab1:
     col_dept, col_cat = st.columns([1, 2])
-    
     with col_dept:
-        # Filter 1: Department
         selected_root = st.selectbox("Step A: Choose Department", options=["Select Department"] + root_list)
     
     with col_cat:
-        # Filter 2: Specific Category (Filtered by Dept)
         if selected_root and selected_root != "Select Department":
-            # Show only categories inside the chosen root
             filtered_paths = cat_df[cat_df['root_category'] == selected_root]['category'].dropna().unique().tolist()
             filtered_paths = sorted(filtered_paths)
-            
-            # This is the "Scrollable Dropdown" + "Search within Dept"
             cat_selection_a = st.selectbox("Step B: Select Specific Category", options=[DEFAULT_CATEGORY_PATH] + filtered_paths)
-            
             if cat_selection_a != DEFAULT_CATEGORY_PATH:
                 selected_category_path = cat_selection_a
         else:
@@ -163,24 +155,18 @@ with tab1:
 
 # --- METHOD B: GLOBAL SEARCH ---
 with tab2:
-    search_query = st.text_input("Type a keyword to find any category (e.g. 'HDMI', 'Baby', 'Dress')")
-    
+    search_query = st.text_input("Type a keyword (e.g. 'HDMI', 'Baby', 'Dress')")
     if search_query:
-        # Search anywhere in the category path
         search_results = cat_df[cat_df['category'].str.contains(search_query, case=False, na=False)]
         found_paths = sorted(search_results['category'].unique().tolist())
-        
         if found_paths:
             cat_selection_b = st.selectbox(f"Found {len(found_paths)} results:", options=[DEFAULT_CATEGORY_PATH] + found_paths)
             if cat_selection_b != DEFAULT_CATEGORY_PATH:
                 selected_category_path = cat_selection_b
         else:
             st.warning("No categories found matching that keyword.")
-    else:
-        st.caption("Start typing above to see results...")
 
-
-# Display Selected Category Confirmation
+# Display Selected Category
 if selected_category_path != DEFAULT_CATEGORY_PATH:
     final_code = path_to_code.get(selected_category_path, '')
     st.success(f"✅ Selected: **{selected_category_path}** (Code: {final_code})")
@@ -213,15 +199,12 @@ with st.form(key='product_form'):
     
     submit_button = st.form_submit_button(label='➕ Add Product to List')
 
-# --- SUBMIT LOGIC ---
 if submit_button:
-    # 1. Validation
     if not new_name or not new_description or not new_short_description_raw:
         st.error("Please fill in Name, Description, and Short Description.")
     elif selected_category_path == DEFAULT_CATEGORY_PATH or not final_code:
         st.error("Please go back to Section 1 and select a valid Category.")
     else:
-        # 2. Generate Data
         generated_sku = generate_sku_config(new_name)
         new_short_description_html = format_to_html_list(new_short_description_raw)
         
@@ -232,7 +215,7 @@ if submit_button:
             'sku_supplier_config': generated_sku,
             'seller_sku': generated_sku,
             'package_content': new_name,
-            'categories': final_code, # Uses the code from Section 1
+            'categories': final_code, 
             'brand': new_brand,
             'color': new_color,
             'main_material': new_material,
@@ -251,8 +234,5 @@ if st.session_state.products:
     st.dataframe(final_df[['name', 'categories', 'sku_supplier_config']].tail(5), use_container_width=True)
     st.markdown(get_csv_download_link(final_df), unsafe_allow_html=True)
     
-    if st.button("🗑️ Clear List"):
-        st.session_state.products = []
-        st.rerun()
 else:
     st.info("Products added to the list will appear here.")
