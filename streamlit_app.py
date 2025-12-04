@@ -5,12 +5,12 @@ import base64
 import os
 
 # --- CONFIGURATION ---
-FILE_NAME_XLSX = 'cats.xlsx'
-FILE_NAME_CSV = 'cats.xlsx - Sheet1.csv' 
+# We prioritize the CSV file now
+FILE_NAME_CSV = 'cats.csv' 
 DEFAULT_BRAND = 'Generic'
 DEFAULT_COLOR = ''
 DEFAULT_MATERIAL = '-'
-DEFAULT_CATEGORY_NAME = 'Select a Category'
+DEFAULT_CATEGORY_PATH = 'Select a Category'
 
 # --- TEMPLATE DATA ---
 TEMPLATE_DATA = {
@@ -28,62 +28,54 @@ TEMPLATE_DATA = {
 @st.cache_data
 def load_category_data():
     """
-    Loads category data and forces strict integer formatting with commas.
-    Example: 110001001 -> "110,001,001"
+    Loads category data from CSV with STRICT string handling.
     """
     df = pd.DataFrame()
     
-    # 1. Attempt to load the file
-    if os.path.exists(FILE_NAME_XLSX):
+    # Check if the file exists
+    if os.path.exists(FILE_NAME_CSV):
         try:
-            # Read as object to prevent initial float conversion errors if possible
-            df = pd.read_excel(FILE_NAME_XLSX, dtype={'categories': object})
-        except Exception as e:
-            st.error(f"Error reading Excel: {e}")
-            return pd.DataFrame(), {}, [DEFAULT_CATEGORY_NAME]
-    elif os.path.exists(FILE_NAME_CSV):
-        try:
-            # Read as object (string) to preserve text content
-            df = pd.read_csv(FILE_NAME_CSV, dtype={'categories': object})
+            # dtype=str is the secret sauce. 
+            # It forces Python to read "1,1000,1001" exactly as it is written, 
+            # without trying to turn it into a math number.
+            df = pd.read_csv(FILE_NAME_CSV, dtype=str)
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
-            return pd.DataFrame(), {}, [DEFAULT_CATEGORY_NAME]
+            return pd.DataFrame(), {}, [DEFAULT_CATEGORY_PATH]
     else:
-        st.error(f"CRITICAL ERROR: Could not find '{FILE_NAME_XLSX}' or '{FILE_NAME_CSV}'.")
-        return pd.DataFrame(), {}, [DEFAULT_CATEGORY_NAME]
+        st.error(f"CRITICAL ERROR: Could not find '{FILE_NAME_CSV}'. Please ensure the file is in the same folder.")
+        return pd.DataFrame(), {}, [DEFAULT_CATEGORY_PATH]
 
-    # 2. Process and Format Data
+    # Process Data
     if not df.empty:
-        df['name'] = df['name'].astype(str).str.strip()
+        # 1. Clean whitespace from all columns
+        df['name'] = df['name'].str.strip()
         
-        # STRICT FORMATTER FUNCTION
-        def format_code(val):
-            try:
-                # Step 1: Convert to string and clean (remove existing commas/spaces)
-                s_val = str(val).replace(',', '').strip()
-                
-                # Step 2: Convert to float first (handles 110001001.0 or 1.1E+8)
-                f_val = float(s_val)
-                
-                # Step 3: Format as Integer with Commas
-                # {:,.0f} -> Comma separator, 0 decimal places
-                return "{:,.0f}".format(f_val)
-            except:
-                # If it's not a number (e.g., text code), return as is
-                return str(val)
+        # We need the 'category' column for the dropdown (Full Path)
+        # If your CSV header is 'id_catalog_category', 'name', 'category', 'categories'
+        if 'category' in df.columns:
+            df['category'] = df['category'].str.strip()
+        else:
+            st.error("CSV Error: Column 'category' (full path) not found.")
+            return pd.DataFrame(), {}, [DEFAULT_CATEGORY_PATH]
 
-        # Apply formatting to the column
-        df['categories'] = df['categories'].apply(format_code)
+        # Ensure codes are clean strings
+        if 'categories' in df.columns:
+            df['categories'] = df['categories'].str.strip()
+        else:
+            st.error("CSV Error: Column 'categories' (the code) not found.")
+            return pd.DataFrame(), {}, [DEFAULT_CATEGORY_PATH]
 
-        # Create Lookup Dictionary
-        name_to_code = df.set_index('name')['categories'].to_dict()
+        # 2. Create Lookup Dictionary: Full Path -> Code
+        # We take the values exactly as they are in the CSV.
+        path_to_code = df.set_index('category')['categories'].to_dict()
         
-        # Create Dropdown List
-        category_names = [DEFAULT_CATEGORY_NAME] + df['name'].unique().tolist()
+        # 3. Create Dropdown List
+        category_paths = [DEFAULT_CATEGORY_PATH] + df['category'].dropna().unique().tolist()
         
-        return df, name_to_code, category_names
+        return df, path_to_code, category_paths
     
-    return pd.DataFrame(), {}, [DEFAULT_CATEGORY_NAME]
+    return pd.DataFrame(), {}, [DEFAULT_CATEGORY_PATH]
 
 
 def format_to_html_list(text):
@@ -114,7 +106,7 @@ def generate_sku_config(name):
 def create_output_df(product_list):
     columns = [
         'sku_supplier_config', 'seller_sku', 'name', 'brand', 
-        'categories', # This will now hold the formatted string "110,001,001"
+        'categories', 
         'product_weight', 'package_type', 'package_quantities', 
         'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 
         'description', 'short_description', 'package_content', 'supplier', 
@@ -133,7 +125,7 @@ def get_csv_download_link(df):
         filename_base = cleaned_name.replace(' ', '_').upper()[:30] 
         filename = f"{filename_base}_and_{len(df)-1}_more.csv" if len(df) > 1 else f"{filename_base}.csv"
             
-    # Save as string (preserving the commas in the 'categories' column)
+    # Save using standard CSV settings (pandas handles the quotes for the "1,1000" automatically)
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">**Download Generated CSV File: {filename}**</a>'
@@ -141,13 +133,13 @@ def get_csv_download_link(df):
 
 # --- APP LAYOUT ---
 st.set_page_config(layout="wide", page_title="Product Data Generator")
-st.title("📦 Product Data Generator")
+st.title("📦 Product Data Generator (CSV Mode)")
 
 if 'products' not in st.session_state:
     st.session_state.products = []
 
 # --- LOAD DATA ---
-cat_df, name_to_code, category_names = load_category_data()
+cat_df, path_to_code, category_paths = load_category_data()
 
 # --- INPUT FORM ---
 st.header("1. Enter New Product Details")
@@ -158,9 +150,9 @@ with st.form(key='product_form'):
     with col_brand:
         new_brand = st.text_input("Brand", value=DEFAULT_BRAND)
 
-    # SEARCHABLE DROPDOWN
+    # --- SEARCHABLE DROPDOWN (FULL PATH) ---
     st.subheader("Category Selection")
-    selected_category_name = st.selectbox("Select Category (Type to Search)", options=category_names)
+    selected_category_path = st.selectbox("Select Full Category Path (Type to Search)", options=category_paths)
 
     st.subheader("Optional Attributes")
     col_color, col_material = st.columns(2)
@@ -179,11 +171,11 @@ with st.form(key='product_form'):
 if submit_button:
     if not new_name or not new_description or not new_short_description_raw:
         st.error("Please fill in Name, Description, and Short Description.")
-    elif selected_category_name == DEFAULT_CATEGORY_NAME:
+    elif selected_category_path == DEFAULT_CATEGORY_PATH:
         st.error("Please select a Category.")
     else:
-        # Retrieve the pre-formatted code (e.g., "110,001,001")
-        final_code = name_to_code.get(selected_category_name, '')
+        # Retrieve the code exactly as it is in the CSV
+        final_code = path_to_code.get(selected_category_path, '')
         
         generated_sku = generate_sku_config(new_name)
         new_short_description_html = format_to_html_list(new_short_description_raw)
@@ -195,7 +187,7 @@ if submit_button:
             'sku_supplier_config': generated_sku,
             'seller_sku': generated_sku,
             'package_content': new_name,
-            'categories': final_code, # Use the correctly formatted code
+            'categories': final_code, 
             'brand': new_brand,
             'color': new_color,
             'main_material': new_material,
@@ -203,7 +195,7 @@ if submit_button:
         }
         
         st.session_state.products.append(new_product)
-        st.success(f"Added: {new_name} | Category Code: {final_code}")
+        st.success(f"Added: {new_name} | Code: {final_code}")
 
 # --- OUTPUT ---
 st.header("2. Generated Product List")
@@ -213,7 +205,6 @@ if st.session_state.products:
     # Show preview
     st.dataframe(final_df[['name', 'categories', 'sku_supplier_config']].tail(5), use_container_width=True)
     
-    # Download Link
     st.markdown(get_csv_download_link(final_df), unsafe_allow_html=True)
     
     if st.button("🗑️ Clear List"):
