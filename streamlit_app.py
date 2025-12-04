@@ -27,7 +27,7 @@ TEMPLATE_DATA = {
 # --- RESET FUNCTION ---
 def hard_reset():
     """
-    Clears the product list AND resets all widget states to defaults.
+    RESET PRODUCT DETAILS
     """
     # 1. Clear the data list
     st.session_state.products = []
@@ -138,7 +138,7 @@ def get_csv_download_link(df):
     return href
 
 # --- APP LAYOUT ---
-st.set_page_config(layout="wide", page_title="Product Data Generator")
+st.set_page_config(layout="wide", page_title="bpg")
 
 # --- SIDEBAR (TOTAL RESET) ---
 with st.sidebar:
