@@ -375,13 +375,13 @@ with st.container():
     
     with col_btn_1:
         if st.session_state.edit_index is not None:
-            st.button("💾 Update Product", on_click=save_product_callback, type="primary", use_container_width=True)
+            st.button("Update Product", on_click=save_product_callback, type="primary", use_container_width=True)
         else:
-            st.button("➕ Add Product", on_click=save_product_callback, type="primary", use_container_width=True)
+            st.button("Add Product", on_click=save_product_callback, type="primary", use_container_width=True)
             
     with col_btn_2:
         if st.session_state.edit_index is not None:
-            st.button("❌ Cancel Edit", on_click=clear_form)
+            st.button("Cancel Edit", on_click=clear_form)
 
 # --- 3. MANAGE & DOWNLOAD ---
 st.markdown("---")
