@@ -59,7 +59,6 @@ with tab1:
                 image = Image.open(uploaded_file)
 
                 # Convert Logic
-                # JPEG doesn't support transparency, so we convert RGBA to RGB with white background
                 if image.mode in ("RGBA", "P"):
                     image = image.convert("RGB")
                 
@@ -90,8 +89,6 @@ with tab2:
         for i, uploaded_file in enumerate(uploaded_files_comp):
             image = Image.open(uploaded_file)
             
-            # Convert to RGB if strictly necessary for JPEG saving or keep original format if possible
-            # Usually compressing implies saving as JPEG/WEBP. We will save as JPEG for max compression compatibility.
             if image.mode in ("RGBA", "P"):
                 image = image.convert("RGB")
             
@@ -126,10 +123,10 @@ with tab2:
             
             # Update Progress
             progress_bar.progress((i + 1) / total_files)
-            time.sleep(0.1) # Small visual delay for UX
+            time.sleep(0.1)
 
 # ==========================
-# TAB 3: RESIZER
+# TAB 3: RESIZER (WITH PREVIEW)
 # ==========================
 with tab3:
     st.header("Resize Image Dimensions")
@@ -137,7 +134,12 @@ with tab3:
     
     if uploaded_file_resize:
         image = Image.open(uploaded_file_resize)
-        st.write(f"Current Dimensions: **{image.width} x {image.height} px**")
+        
+        # --- PREVIEW SECTION ---
+        st.markdown("#### Preview (Original)")
+        # Shows the image immediately
+        st.image(image, caption=f"Original Size: {image.width} x {image.height} px", use_container_width=True)
+        st.markdown("---")
         
         col1, col2 = st.columns(2)
         with col1:
@@ -148,17 +150,16 @@ with tab3:
         maintain_aspect = st.checkbox("Maintain Aspect Ratio (Calculates Height auto)", value=True)
         
         if maintain_aspect:
-            # Recalculate height based on width input
-            aspect_ratio = image.height / image.width
-            new_height = int(new_width * aspect_ratio)
-            st.info(f"Height adjusted to {new_height}px to maintain aspect ratio.")
+             aspect_ratio = image.height / image.width
+             new_height = int(new_width * aspect_ratio)
+             st.info(f"Height adjusted to {new_height}px to maintain aspect ratio.")
 
         if st.button("Apply Resize"):
             resized_image = image.resize((int(new_width), int(new_height)))
             
-            st.image(resized_image, caption=f"Resized to {new_width}x{new_height}", use_container_width=False, width=int(new_width) if new_width < 700 else 700)
+            st.success("Image Resized!")
+            st.image(resized_image, caption=f"Resized to {new_width}x{new_height}", use_container_width=True)
             
-            # Prepare download (saving as PNG to keep quality/transparency)
             buf = io.BytesIO()
             resized_image.save(buf, format="PNG")
             byte_im = buf.getvalue()
@@ -171,45 +172,56 @@ with tab3:
             )
 
 # ==========================
-# TAB 4: BACKGROUND TOOL
+# TAB 4: BACKGROUND TOOL (WITH PREVIEW)
 # ==========================
 with tab4:
     st.header("Remove & Replace Background")
     uploaded_file_bg = st.file_uploader("Upload image (Person/Object)", type=['png', 'jpg', 'jpeg'], key="bg_uploader")
     
-    col_ctrl, col_prev = st.columns([1, 2])
-    
-    with col_ctrl:
-        bg_color = st.color_picker("Pick Background Color", "#ffffff")
-        process_btn = st.button("Process Background")
-    
-    if uploaded_file_bg and process_btn:
+    if uploaded_file_bg:
+        # Create two columns: Controls on Left, Preview on Right
+        col_ctrl, col_prev = st.columns([1, 2])
+        
+        # --- CONTROL COLUMN ---
+        with col_ctrl:
+            st.markdown("### Settings")
+            bg_color = st.color_picker("Pick Background Color", "#ffffff")
+            process_btn = st.button("Process Background")
+        
+        # --- PREVIEW COLUMN ---
         with col_prev:
-            with st.spinner("Removing background (this may take a moment)..."):
-                from rembg import remove
-                input_image = Image.open(uploaded_file_bg)
-                
-                # 1. Remove Background
-                no_bg_image = remove(input_image)
-                
-                # 2. Create Solid Color Background
-                # Create a new image with the picked color
-                new_bg = Image.new("RGBA", no_bg_image.size, bg_color)
-                
-                # 3. Paste the foreground onto the color background
-                # no_bg_image contains transparency (Alpha channel), use it as mask
-                new_bg.paste(no_bg_image, (0, 0), no_bg_image)
-                
-                st.image(new_bg, caption="New Background Applied", use_container_width=True)
-                
-                # Convert to bytes for download
-                buf = io.BytesIO()
-                new_bg.convert("RGB").save(buf, format="JPEG") # Save as JPEG to apply the background color permanently
-                byte_im = buf.getvalue()
-                
-                st.download_button(
-                    label="⬇️ Download Image",
-                    data=byte_im,
-                    file_name="new_background.jpg",
-                    mime="image/jpeg"
-                )
+            # If button NOT clicked yet, show Original
+            if not process_btn:
+                st.markdown("### Original Preview")
+                st.image(uploaded_file_bg, caption="Original Image", use_container_width=True)
+            
+            # If button CLICKED, show Processing/Result
+            else:
+                with st.spinner("Removing background (this may take a moment)..."):
+                    from rembg import remove
+                    input_image = Image.open(uploaded_file_bg)
+                    
+                    # 1. Remove Background
+                    no_bg_image = remove(input_image)
+                    
+                    # 2. Create Solid Color Background
+                    new_bg = Image.new("RGBA", no_bg_image.size, bg_color)
+                    
+                    # 3. Paste foreground
+                    new_bg.paste(no_bg_image, (0, 0), no_bg_image)
+                    
+                    # Show Result
+                    st.markdown("### Result")
+                    st.image(new_bg, caption="New Background Applied", use_container_width=True)
+                    
+                    # Prepare Download
+                    buf = io.BytesIO()
+                    new_bg.convert("RGB").save(buf, format="JPEG")
+                    byte_im = buf.getvalue()
+                    
+                    st.download_button(
+                        label="⬇️ Download Image",
+                        data=byte_im,
+                        file_name="new_background.jpg",
+                        mime="image/jpeg"
+                    )
