@@ -161,14 +161,14 @@ with st.sidebar:
         st.success("Resetted")
         st.session_state['reset_success'] = False
 
-st.title("📦 Product Data Generator")
+st.title("Product Data Generator")
 
 # --- LOAD DATA ---
 cat_df, path_to_code, root_list = load_category_data()
 
 # --- 1. CATEGORY SELECTION ---
 st.header("1. Find Category")
-tab1, tab2 = st.tabs(["📂 Browse by Department", "🔍 Global Search"])
+tab1, tab2 = st.tabs(["Browse by Department", " Global Search"])
 
 selected_category_path = DEFAULT_CATEGORY_PATH
 
@@ -217,9 +217,9 @@ with tab2:
 
 if selected_category_path != DEFAULT_CATEGORY_PATH:
     final_code = path_to_code.get(selected_category_path, '')
-    st.success(f"✅ Selected: **{selected_category_path}** (Code: {final_code})")
+    st.success(f" Selected: **{selected_category_path}** (Code: {final_code})")
 else:
-    st.warning("⚠️ Please select a category above before adding a product.")
+    st.warning(" Please select a category above before adding a product.")
     final_code = ""
 
 
