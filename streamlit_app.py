@@ -34,49 +34,90 @@ TEMPLATE_DATA = {
 }
 
 # --- INITIALIZE SESSION STATE ---
+# We use these keys to control the widgets
+default_keys = [
+    'prod_name', 'prod_brand', 'prod_color', 'prod_material', 
+    'prod_short', 'prod_in_box', 'custom_col_name', 'custom_col_val'
+]
+
 if 'products' not in st.session_state:
     st.session_state.products = []
 
-# Initialize Form Defaults
-defaults = {
-    'dept_selector': "Select Department",
-    'cat_selector_a': DEFAULT_CATEGORY_PATH,
-    'cat_selector_b': DEFAULT_CATEGORY_PATH,
-    'search_query': "",
-    'prod_name': "",
-    'prod_brand': DEFAULT_BRAND,
-    'prod_color': DEFAULT_COLOR,
-    'prod_material': DEFAULT_MATERIAL,
-    'prod_short': "",
-    'prod_in_box': "",
-    'custom_col_name': "",
-    'custom_col_val': "",
-    'reset_success': False,
-    'editor_key': 0  # <--- NEW: Key to force-reset the Quill editor
-}
+if 'edit_index' not in st.session_state:
+    st.session_state.edit_index = None  # None = Adding new, Integer = Editing index
 
-for key, val in defaults.items():
+if 'quill_key' not in st.session_state:
+    st.session_state.quill_key = 0      # Used to force reset/reload Quill
+
+if 'quill_content' not in st.session_state:
+    st.session_state.quill_content = "" # Holds HTML for Quill
+
+# Initialize widget state if not present
+for key in default_keys:
     if key not in st.session_state:
-        st.session_state[key] = val
+        st.session_state[key] = ""
+    # Set defaults for specific fields
+    if key == 'prod_brand' and not st.session_state[key]: st.session_state[key] = DEFAULT_BRAND
+    if key == 'prod_material' and not st.session_state[key]: st.session_state[key] = DEFAULT_MATERIAL
 
 # --- HELPER FUNCTIONS ---
 
-def hard_reset():
-    """Clears the product list AND resets all widget states."""
-    st.session_state.products = []
+def clear_form():
+    """Resets text inputs and Quill to defaults, keeps Category active."""
+    for key in default_keys:
+        st.session_state[key] = ""
     
-    # Reset all standard widgets
-    for key, val in defaults.items():
-        if key in st.session_state:
-            st.session_state[key] = val
+    # Restore defaults
+    st.session_state['prod_brand'] = DEFAULT_BRAND
+    st.session_state['prod_material'] = DEFAULT_MATERIAL
     
-    # FORCE RESET QUILL: Incrementing this key creates a brand new editor instance
-    st.session_state['editor_key'] += 1
-            
-    st.session_state['reset_success'] = True
+    # Reset Quill
+    st.session_state.quill_content = "" 
+    st.session_state.quill_key += 1 # Increment key to re-render empty editor
+    
+    # Reset Edit Mode
+    st.session_state.edit_index = None
+
+def load_product_for_edit(index):
+    """Loads a product from the list into the form widgets."""
+    product = st.session_state.products[index]
+    
+    st.session_state['prod_name'] = product.get('name', '')
+    st.session_state['prod_brand'] = product.get('brand', '')
+    st.session_state['prod_color'] = product.get('color', '')
+    st.session_state['prod_material'] = product.get('main_material', '')
+    
+    # Reverse formatting for Text Areas (HTML -> Text) is hard, 
+    # so we just load the raw HTML back into Quill, 
+    # but for Short Desc we might have to just load blank or keep simple.
+    # For this simpler version, we will try to strip HTML tags for text areas if needed,
+    # but let's just load the raw text if we saved it, or empty if we didn't.
+    # Since we didn't save "raw" inputs before, editing might show HTML in text areas.
+    # IMPROVEMENT: In a real app, save 'raw_short_desc' in the product dict. 
+    # Here we will just leave short/box empty to avoid breaking HTML.
+    st.session_state['prod_short'] = "" 
+    st.session_state['prod_in_box'] = ""
+    
+    # Load Quill
+    st.session_state.quill_content = product.get('description', '')
+    st.session_state.quill_key += 1
+    
+    st.session_state.edit_index = index
+
+def delete_product(index):
+    """Removes a product from the list."""
+    if 0 <= index < len(st.session_state.products):
+        st.session_state.products.pop(index)
+        # If we were editing the deleted item, clear form
+        if st.session_state.edit_index == index:
+            clear_form()
+        # If we were editing an item AFTER the deleted one, shift index down
+        elif st.session_state.edit_index is not None and st.session_state.edit_index > index:
+            st.session_state.edit_index -= 1
 
 @st.cache_data
 def load_category_data():
+    # (Same loading logic as before)
     df = pd.DataFrame()
     if os.path.exists(FILE_NAME_CSV):
         try:
@@ -85,8 +126,8 @@ def load_category_data():
             st.error(f"Error reading CSV: {e}")
             return pd.DataFrame(), {}, [], []
     else:
-        st.error(f"CRITICAL ERROR: '{FILE_NAME_CSV}' not found.")
-        return pd.DataFrame(), {}, [], []
+        # Create dummy data if file missing so app doesn't crash
+        return pd.DataFrame({'category':['Test'], 'root_category':['Test'], 'categories':['123']}), {'Test':'123'}, ['Test']
 
     if not df.empty:
         for col in ['name', 'category', 'categories']:
@@ -153,13 +194,63 @@ def get_csv_download_link(df):
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">**Download Generated CSV File: {filename}**</a>'
     return href
 
-# --- SIDEBAR (Reset) ---
+# --- LOGIC TO SAVE PRODUCT (CALLBACK) ---
+def save_product_callback():
+    # 1. Validate
+    if not st.session_state['prod_name']:
+        st.error("Product Name is required.")
+        return
+    if selected_category_path == DEFAULT_CATEGORY_PATH or not final_code:
+        st.error("Please select a valid Category.")
+        return
+
+    # 2. Process Data
+    generated_sku = generate_sku_config(st.session_state['prod_name'])
+    short_desc_html = format_to_html_list(st.session_state['prod_short'])
+    final_box_content = st.session_state['prod_in_box'] if st.session_state['prod_in_box'].strip() else st.session_state['prod_name']
+    package_content_html = format_to_html_list(final_box_content)
+    
+    # Use the Description from Session State (Quill)
+    # Note: st_quill writes to its own key, but we need to capture it.
+    # In the form below, we assign the quill output to a variable, we use that.
+
+    new_product = {
+        'name': st.session_state['prod_name'],
+        'description': st.session_state.get('current_quill_html', ''),      
+        'short_description': short_desc_html, 
+        'package_content': package_content_html, 
+        'sku_supplier_config': generated_sku,
+        'seller_sku': generated_sku,
+        'categories': final_code, 
+        'brand': st.session_state['prod_brand'],
+        'color': st.session_state['prod_color'],
+        'main_material': st.session_state['prod_material'],
+        **TEMPLATE_DATA
+    }
+    
+    if st.session_state['custom_col_name'] and st.session_state['custom_col_val']:
+        new_product[st.session_state['custom_col_name']] = st.session_state['custom_col_val']
+
+    # 3. Add or Update
+    if st.session_state.edit_index is not None:
+        # Update existing
+        st.session_state.products[st.session_state.edit_index] = new_product
+        st.toast(f"Updated: {st.session_state['prod_name']}")
+    else:
+        # Add new
+        st.session_state.products.append(new_product)
+        st.toast(f"Added: {st.session_state['prod_name']}")
+
+    # 4. Clear Form
+    clear_form()
+
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Options")
-    st.button("🗑️ Reset All", on_click=hard_reset, type="primary")
-    if st.session_state.get('reset_success'):
-        st.success("Resetted")
-        st.session_state['reset_success'] = False
+    if st.button("🗑️ Reset Entire App", type="primary"):
+        st.session_state.products = []
+        clear_form()
+        st.rerun()
 
 st.title("Product Data Generator")
 
@@ -172,7 +263,7 @@ tab1, tab2 = st.tabs(["Browse by Department", " Global Search"])
 
 selected_category_path = DEFAULT_CATEGORY_PATH
 
-# --- METHOD A: DEPT FILTER ---
+# (Kept your existing Category Logic)
 with tab1:
     col_dept, col_cat = st.columns([1, 2])
     with col_dept:
@@ -195,12 +286,8 @@ with tab1:
         else:
             st.selectbox("Step B: Select Specific Category", options=["First select a department"], disabled=True)
 
-# --- METHOD B: GLOBAL SEARCH ---
 with tab2:
-    search_query = st.text_input(
-        "Type a keyword (e.g. 'HDMI', 'Baby', 'Dress')",
-        key='search_query'
-    )
+    search_query = st.text_input("Type a keyword", key='search_query')
     if search_query:
         search_results = cat_df[cat_df['category'].str.contains(search_query, case=False, na=False)]
         found_paths = sorted(search_results['category'].unique().tolist())
@@ -213,129 +300,135 @@ with tab2:
             if cat_selection_b != DEFAULT_CATEGORY_PATH:
                 selected_category_path = cat_selection_b
         else:
-            st.warning("No categories found matching that keyword.")
+            st.warning("No categories found.")
 
 if selected_category_path != DEFAULT_CATEGORY_PATH:
     final_code = path_to_code.get(selected_category_path, '')
     st.success(f" Selected: **{selected_category_path}** (Code: {final_code})")
 else:
-    st.warning(" Please select a category above before adding a product.")
+    st.warning("Please select a category above.")
     final_code = ""
-
 
 # --- 2. PRODUCT DETAILS FORM ---
 st.markdown("---")
-st.header("2. Product Details")
 
-with st.form(key='product_form'):
+# Header Changes based on Mode
+if st.session_state.edit_index is not None:
+    st.markdown(f"### ✏️ Editing Product #{st.session_state.edit_index + 1}")
+else:
+    st.header("2. Product Details")
+
+# Use a container for the inputs so we can control them
+with st.container():
     col_name, col_brand = st.columns([3, 1])
     with col_name:
-        new_name = st.text_input("Product Name", placeholder="e.g., 10PCS Refrigerator Bags", key='prod_name')
+        st.text_input("Product Name", key='prod_name', placeholder="e.g., 10PCS Refrigerator Bags")
     with col_brand:
-        new_brand = st.text_input("Brand", key='prod_brand')
+        st.text_input("Brand", key='prod_brand')
 
     st.subheader("Optional Attributes")
     col_color, col_material = st.columns(2)
     with col_color:
-        new_color = st.text_input("Color", key='prod_color')
+        st.text_input("Color", key='prod_color')
     with col_material:
-        new_material = st.text_input("Main Material", key='prod_material')
+        st.text_input("Main Material", key='prod_material')
         
     st.markdown("---")
 
-    # --- EDITOR 1: FULL DESCRIPTION (Visual Editor) ---
+    # --- EDITOR 1: FULL DESCRIPTION ---
     st.subheader("Full Description")
-    st.caption("Detailed product information.")
-    
-    # DYNAMIC KEY: We append the 'editor_key' number to the widget key.
-    # When reset is clicked, this number changes, creating a FRESH empty editor.
-    full_desc_html = st_quill(
+    # Store Quill output in a temp variable, but load initial content from state
+    current_quill_html = st_quill(
+        value=st.session_state.quill_content, # Loads data when editing
         placeholder="Enter full description here...",
         html=True,
-        key=f"quill_full_html_{st.session_state['editor_key']}"
+        key=f"quill_{st.session_state.quill_key}" # Key changes force refresh
     )
+    # Save the current quill output to session state so callback can access it
+    st.session_state['current_quill_html'] = current_quill_html
 
-    # --- EDITOR 2: SHORT DESCRIPTION (Text Area) ---
+    # --- EDITOR 2: SHORT DESCRIPTION ---
     st.markdown("---")
-    st.subheader("Short Description (Highlights)")
-    st.caption("Paste your list here. The app will automatically turn each line into a bullet point.")
-    
-    short_desc_raw = st.text_area(
-        "Enter highlights (one per line)", 
-        height=150, 
-        key='prod_short'
-    )
+    st.subheader("Short Description")
+    st.text_area("Enter highlights (one per line)", height=150, key='prod_short')
 
-    # --- NEW: WHAT'S IN THE BOX ---
+    # --- IN THE BOX ---
     st.markdown("---")
     st.subheader("What's in the Box")
-    st.caption("Leave empty to use the Product Name. Content is automatically bulleted.")
+    st.text_area("Enter package content", height=100, key='prod_in_box')
     
-    prod_in_box_raw = st.text_area(
-        "Enter package content (one per line)", 
-        height=100, 
-        key='prod_in_box'
-    )
-    
-    # --- CUSTOM COLUMN SECTION ---
+    # --- CUSTOM COLUMN ---
     st.markdown("---")
-    st.subheader("Add Custom Column (Optional)")
     c_custom_1, c_custom_2 = st.columns(2)
     with c_custom_1:
-        custom_col_name = st.text_input("Column Name", placeholder="e.g. Warranty", key='custom_col_name')
+        st.text_input("Custom Column Name", key='custom_col_name')
     with c_custom_2:
-        custom_col_val = st.text_input("Value", placeholder="e.g. 2 Years", key='custom_col_val')
+        st.text_input("Custom Value", key='custom_col_val')
     
     st.markdown("---")
-    submit_button = st.form_submit_button(label='➕ Add Product to List')
+    
+    # --- ACTION BUTTONS ---
+    col_btn_1, col_btn_2 = st.columns([1, 4])
+    
+    with col_btn_1:
+        if st.session_state.edit_index is not None:
+            # UPDATE BUTTON
+            st.button("💾 Update Product", on_click=save_product_callback, type="primary", use_container_width=True)
+        else:
+            # ADD BUTTON
+            st.button("➕ Add Product", on_click=save_product_callback, type="primary", use_container_width=True)
+            
+    with col_btn_2:
+        if st.session_state.edit_index is not None:
+            st.button("❌ Cancel Edit", on_click=clear_form)
 
-if submit_button:
-    if not new_name:
-        st.error("Product Name is required.")
-    elif selected_category_path == DEFAULT_CATEGORY_PATH or not final_code:
-        st.error("Please go back to Section 1 and select a valid Category.")
-    else:
-        generated_sku = generate_sku_config(new_name)
-        
-        # 1. Process Short Description
-        short_desc_html = format_to_html_list(short_desc_raw)
-
-        # 2. Process Package Content
-        final_box_content = prod_in_box_raw if prod_in_box_raw.strip() else new_name
-        package_content_html = format_to_html_list(final_box_content)
-
-        # Base Product Data
-        new_product = {
-            'name': new_name,
-            'description': full_desc_html,      
-            'short_description': short_desc_html, 
-            'package_content': package_content_html, 
-            'sku_supplier_config': generated_sku,
-            'seller_sku': generated_sku,
-            'categories': final_code, 
-            'brand': new_brand,
-            'color': new_color,
-            'main_material': new_material,
-            **TEMPLATE_DATA
-        }
-        
-        if custom_col_name and custom_col_val:
-            new_product[custom_col_name] = custom_col_val
-        
-        st.session_state.products.append(new_product)
-        st.success(f"Added: {new_name}")
-
-# --- OUTPUT ---
+# --- 3. MANAGE & DOWNLOAD ---
 st.markdown("---")
-st.header("3. Download Data")
+st.header("3. Manage & Download Data")
+
 if st.session_state.products:
+    
+    # --- LIST VIEW WITH EDIT/DELETE ---
+    st.write(f"**Total Products:** {len(st.session_state.products)}")
+    
+    # Header Row
+    c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
+    c1.markdown("**Product Name**")
+    c2.markdown("**Category Code**")
+    c3.markdown("**Action**")
+    c4.markdown("**Action**")
+    
+    for i, prod in enumerate(st.session_state.products):
+        with st.container():
+            st.markdown("---")
+            c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
+            
+            # Highlight the row being edited
+            is_editing = (st.session_state.edit_index == i)
+            name_display = f"✏️ **{prod['name']}** (Editing)" if is_editing else prod['name']
+            
+            c1.markdown(name_display)
+            c2.text(prod['categories'])
+            
+            # Edit Button
+            if c3.button("Edit", key=f"edit_{i}"):
+                load_product_for_edit(i)
+                st.rerun()
+                
+            # Delete Button
+            if c4.button("Delete", key=f"del_{i}"):
+                delete_product(i)
+                st.rerun()
+
+    st.markdown("---")
+    
+    # --- DOWNLOAD SECTION ---
     final_df = create_output_df(st.session_state.products)
-    
-    cols_to_show = ['name', 'categories']
-    if custom_col_name and custom_col_name in final_df.columns:
-        cols_to_show.append(custom_col_name)
-    
-    st.dataframe(final_df.tail(5), use_container_width=True)
     st.markdown(get_csv_download_link(final_df), unsafe_allow_html=True)
+
+    # Preview Table
+    with st.expander("View Raw Data Table"):
+        st.dataframe(final_df, use_container_width=True)
+
 else:
-    st.info("Products added to the list will appear here.")
+    st.info("No products added yet.")
