@@ -6,7 +6,7 @@ import time
 # --- Page Configuration ---
 st.set_page_config(page_title="Image Tool Suite", page_icon="", layout="wide")
 
-st.title("All-in-One Image Toolkit")
+st.title("Image Toolkit")
 st.markdown("Use the tabs below to Convert, Compress, Resize, or Edit Backgrounds.")
 
 # --- CSS Styling ---
