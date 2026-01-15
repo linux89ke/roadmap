@@ -12,7 +12,7 @@ except ImportError:
     st.stop()
 
 # --- APP CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Product Data Generator")
+st.set_page_config(layout="wide", page_title="Products")
 
 FILE_NAME_CSV = 'cats.csv' 
 DEFAULT_BRAND = 'Generic'
@@ -257,7 +257,7 @@ with st.sidebar:
         clear_form()
         st.rerun()
 
-st.title("Product Data Generator")
+st.title("📦 Products")
 
 # --- LOAD DATA ---
 cat_df, path_to_code, root_list = load_category_data()
