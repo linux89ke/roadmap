@@ -2,7 +2,6 @@ import streamlit as st
 from PIL import Image
 import io
 import time
-from rembg import remove
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Image Tool Suite", page_icon="🖼️", layout="wide")
@@ -195,6 +194,7 @@ with tab4:
     if uploaded_file_bg and process_btn:
         with col_prev:
             with st.spinner("Removing background (this may take a moment)..."):
+                from rembg import remove
                 input_image = Image.open(uploaded_file_bg)
                 
                 # 1. Remove Background
