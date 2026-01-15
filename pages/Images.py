@@ -4,9 +4,9 @@ import io
 import time
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Image Tool Suite", page_icon="🖼️", layout="wide")
+st.set_page_config(page_title="Image Tool Suite", page_icon="", layout="wide")
 
-st.title("🖼️ All-in-One Image Toolkit")
+st.title("All-in-One Image Toolkit")
 st.markdown("Use the tabs below to Convert, Compress, Resize, or Edit Backgrounds.")
 
 # --- CSS Styling ---
@@ -37,10 +37,10 @@ def format_size(size):
 
 # --- Tabs Setup ---
 tab1, tab2, tab3, tab4 = st.tabs([
-    "📂 Converter (to JPEG)", 
-    "🗜️ Compressor", 
-    "📏 Resizer", 
-    "🎨 Background Tool"
+    "Converter (to JPEG)", 
+    "Compressor", 
+    "Resizer", 
+    "Background Tool"
 ])
 
 # ==========================
