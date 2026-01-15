@@ -11,3 +11,5 @@ playwright
 xlsxwriter
 tenacity==8.5.0
 streamlit-quill
+Pillow
+rembg
