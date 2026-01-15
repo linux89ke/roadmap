@@ -34,7 +34,6 @@ TEMPLATE_DATA = {
 }
 
 # --- INITIALIZE SESSION STATE ---
-# We use these keys to control the widgets
 default_keys = [
     'prod_name', 'prod_brand', 'prod_color', 'prod_material', 
     'prod_short', 'prod_in_box', 'custom_col_name', 'custom_col_val'
@@ -56,7 +55,7 @@ if 'quill_content' not in st.session_state:
 for key in default_keys:
     if key not in st.session_state:
         st.session_state[key] = ""
-    # Set defaults for specific fields
+    # Set defaults
     if key == 'prod_brand' and not st.session_state[key]: st.session_state[key] = DEFAULT_BRAND
     if key == 'prod_material' and not st.session_state[key]: st.session_state[key] = DEFAULT_MATERIAL
 
@@ -73,7 +72,7 @@ def clear_form():
     
     # Reset Quill
     st.session_state.quill_content = "" 
-    st.session_state.quill_key += 1 # Increment key to re-render empty editor
+    st.session_state.quill_key += 1 
     
     # Reset Edit Mode
     st.session_state.edit_index = None
@@ -87,14 +86,8 @@ def load_product_for_edit(index):
     st.session_state['prod_color'] = product.get('color', '')
     st.session_state['prod_material'] = product.get('main_material', '')
     
-    # Reverse formatting for Text Areas (HTML -> Text) is hard, 
-    # so we just load the raw HTML back into Quill, 
-    # but for Short Desc we might have to just load blank or keep simple.
-    # For this simpler version, we will try to strip HTML tags for text areas if needed,
-    # but let's just load the raw text if we saved it, or empty if we didn't.
-    # Since we didn't save "raw" inputs before, editing might show HTML in text areas.
-    # IMPROVEMENT: In a real app, save 'raw_short_desc' in the product dict. 
-    # Here we will just leave short/box empty to avoid breaking HTML.
+    # We clear short/box inputs because we can't easily convert HTML back to raw text lists
+    # without a complex parser. Editing will require re-typing these specific fields if changed.
     st.session_state['prod_short'] = "" 
     st.session_state['prod_in_box'] = ""
     
@@ -117,7 +110,6 @@ def delete_product(index):
 
 @st.cache_data
 def load_category_data():
-    # (Same loading logic as before)
     df = pd.DataFrame()
     if os.path.exists(FILE_NAME_CSV):
         try:
@@ -126,7 +118,7 @@ def load_category_data():
             st.error(f"Error reading CSV: {e}")
             return pd.DataFrame(), {}, [], []
     else:
-        # Create dummy data if file missing so app doesn't crash
+        # Dummy fallback
         return pd.DataFrame({'category':['Test'], 'root_category':['Test'], 'categories':['123']}), {'Test':'123'}, ['Test']
 
     if not df.empty:
@@ -200,7 +192,22 @@ def save_product_callback():
     if not st.session_state['prod_name']:
         st.error("Product Name is required.")
         return
-    if selected_category_path == DEFAULT_CATEGORY_PATH or not final_code:
+    
+    # We need access to the selected category here. 
+    # Since 'selected_category_path' is calculated in the main script, 
+    # we need to grab the widget values from state directly.
+    cat_path = DEFAULT_CATEGORY_PATH
+    
+    # Try Method A first
+    if st.session_state.get('cat_selector_a') and st.session_state['cat_selector_a'] != DEFAULT_CATEGORY_PATH:
+        cat_path = st.session_state['cat_selector_a']
+    # Try Method B if A is not set
+    elif st.session_state.get('cat_selector_b') and st.session_state['cat_selector_b'] != DEFAULT_CATEGORY_PATH:
+        cat_path = st.session_state['cat_selector_b']
+        
+    code = path_to_code.get(cat_path, '')
+
+    if cat_path == DEFAULT_CATEGORY_PATH or not code:
         st.error("Please select a valid Category.")
         return
 
@@ -212,8 +219,6 @@ def save_product_callback():
     
     # Use the Description from Session State (Quill)
     # Note: st_quill writes to its own key, but we need to capture it.
-    # In the form below, we assign the quill output to a variable, we use that.
-
     new_product = {
         'name': st.session_state['prod_name'],
         'description': st.session_state.get('current_quill_html', ''),      
@@ -221,7 +226,7 @@ def save_product_callback():
         'package_content': package_content_html, 
         'sku_supplier_config': generated_sku,
         'seller_sku': generated_sku,
-        'categories': final_code, 
+        'categories': code, 
         'brand': st.session_state['prod_brand'],
         'color': st.session_state['prod_color'],
         'main_material': st.session_state['prod_material'],
@@ -263,7 +268,7 @@ tab1, tab2 = st.tabs(["Browse by Department", " Global Search"])
 
 selected_category_path = DEFAULT_CATEGORY_PATH
 
-# (Kept your existing Category Logic)
+# Method A: Dept Filter
 with tab1:
     col_dept, col_cat = st.columns([1, 2])
     with col_dept:
@@ -286,6 +291,7 @@ with tab1:
         else:
             st.selectbox("Step B: Select Specific Category", options=["First select a department"], disabled=True)
 
+# Method B: Global Search
 with tab2:
     search_query = st.text_input("Type a keyword", key='search_query')
     if search_query:
@@ -312,13 +318,11 @@ else:
 # --- 2. PRODUCT DETAILS FORM ---
 st.markdown("---")
 
-# Header Changes based on Mode
 if st.session_state.edit_index is not None:
     st.markdown(f"### ✏️ Editing Product #{st.session_state.edit_index + 1}")
 else:
     st.header("2. Product Details")
 
-# Use a container for the inputs so we can control them
 with st.container():
     col_name, col_brand = st.columns([3, 1])
     with col_name:
@@ -337,12 +341,11 @@ with st.container():
 
     # --- EDITOR 1: FULL DESCRIPTION ---
     st.subheader("Full Description")
-    # Store Quill output in a temp variable, but load initial content from state
     current_quill_html = st_quill(
-        value=st.session_state.quill_content, # Loads data when editing
+        value=st.session_state.quill_content, 
         placeholder="Enter full description here...",
         html=True,
-        key=f"quill_{st.session_state.quill_key}" # Key changes force refresh
+        key=f"quill_{st.session_state.quill_key}"
     )
     # Save the current quill output to session state so callback can access it
     st.session_state['current_quill_html'] = current_quill_html
@@ -372,10 +375,8 @@ with st.container():
     
     with col_btn_1:
         if st.session_state.edit_index is not None:
-            # UPDATE BUTTON
             st.button("💾 Update Product", on_click=save_product_callback, type="primary", use_container_width=True)
         else:
-            # ADD BUTTON
             st.button("➕ Add Product", on_click=save_product_callback, type="primary", use_container_width=True)
             
     with col_btn_2:
@@ -388,7 +389,6 @@ st.header("3. Manage & Download Data")
 
 if st.session_state.products:
     
-    # --- LIST VIEW WITH EDIT/DELETE ---
     st.write(f"**Total Products:** {len(st.session_state.products)}")
     
     # Header Row
@@ -403,22 +403,15 @@ if st.session_state.products:
             st.markdown("---")
             c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
             
-            # Highlight the row being edited
             is_editing = (st.session_state.edit_index == i)
             name_display = f"✏️ **{prod['name']}** (Editing)" if is_editing else prod['name']
             
             c1.markdown(name_display)
             c2.text(prod['categories'])
             
-            # Edit Button
-            if c3.button("Edit", key=f"edit_{i}"):
-                load_product_for_edit(i)
-                st.rerun()
-                
-            # Delete Button
-            if c4.button("Delete", key=f"del_{i}"):
-                delete_product(i)
-                st.rerun()
+            # Use Callbacks (on_click) to avoid Session State crash
+            c3.button("Edit", key=f"edit_{i}", on_click=load_product_for_edit, args=(i,))
+            c4.button("Delete", key=f"del_{i}", on_click=delete_product, args=(i,))
 
     st.markdown("---")
     
@@ -426,7 +419,6 @@ if st.session_state.products:
     final_df = create_output_df(st.session_state.products)
     st.markdown(get_csv_download_link(final_df), unsafe_allow_html=True)
 
-    # Preview Table
     with st.expander("View Raw Data Table"):
         st.dataframe(final_df, use_container_width=True)
 
