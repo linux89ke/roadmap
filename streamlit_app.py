@@ -252,12 +252,12 @@ def save_product_callback():
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Options")
-    if st.button("🗑️ Reset Entire App", type="primary"):
+    if st.button(" Reset Entire App", type="primary"):
         st.session_state.products = []
         clear_form()
         st.rerun()
 
-st.title("📦 Products")
+st.title(" Products")
 
 # --- LOAD DATA ---
 cat_df, path_to_code, root_list = load_category_data()
