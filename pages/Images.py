@@ -2,6 +2,7 @@ import streamlit as st
 from PIL import Image
 import io
 import time
+from rembg import remove
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Image Tool Suite", page_icon="", layout="wide")
@@ -78,7 +79,15 @@ with tab2:
     st.header("Compress Images")
     
     # Settings
-    quality_val = st.slider("Compression Quality (Lower = Smaller File)", min_value=1, max_value=95, value=50, step=5)
+    quality_val = st.slider(
+        "Compression Quality (Lower % = Smaller File)", 
+        min_value=1, 
+        max_value=95, 
+        value=50, 
+        step=5,
+        format="%d%%"  # <--- Added this line to show percentage
+    )
+    
     uploaded_files_comp = st.file_uploader("Upload images to compress", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True, key="comp_uploader")
     
     if uploaded_files_comp:
@@ -137,7 +146,6 @@ with tab3:
         
         # --- PREVIEW SECTION ---
         st.markdown("#### Preview (Original)")
-        # Shows the image immediately
         st.image(image, caption=f"Original Size: {image.width} x {image.height} px", use_container_width=True)
         st.markdown("---")
         
@@ -179,7 +187,6 @@ with tab4:
     uploaded_file_bg = st.file_uploader("Upload image (Person/Object)", type=['png', 'jpg', 'jpeg'], key="bg_uploader")
     
     if uploaded_file_bg:
-        # Create two columns: Controls on Left, Preview on Right
         col_ctrl, col_prev = st.columns([1, 2])
         
         # --- CONTROL COLUMN ---
@@ -190,15 +197,12 @@ with tab4:
         
         # --- PREVIEW COLUMN ---
         with col_prev:
-            # If button NOT clicked yet, show Original
             if not process_btn:
                 st.markdown("### Original Preview")
                 st.image(uploaded_file_bg, caption="Original Image", use_container_width=True)
             
-            # If button CLICKED, show Processing/Result
             else:
                 with st.spinner("Removing background (this may take a moment)..."):
-                    from rembg import remove
                     input_image = Image.open(uploaded_file_bg)
                     
                     # 1. Remove Background
@@ -210,7 +214,6 @@ with tab4:
                     # 3. Paste foreground
                     new_bg.paste(no_bg_image, (0, 0), no_bg_image)
                     
-                    # Show Result
                     st.markdown("### Result")
                     st.image(new_bg, caption="New Background Applied", use_container_width=True)
                     
