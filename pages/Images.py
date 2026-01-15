@@ -157,10 +157,10 @@ with tab3:
         maintain_aspect = st.checkbox("Maintain Aspect Ratio (Calculates Height auto)", value=True)
         
         if maintain_aspect:
-             # Recalculate height based on width input
-             aspect_ratio = image.height / image.width
-             new_height = int(new_width * aspect_ratio)
-             st.info(f"Height adjusted to {new_height}px to maintain aspect ratio.")
+            # Recalculate height based on width input
+            aspect_ratio = image.height / image.width
+            new_height = int(new_width * aspect_ratio)
+            st.info(f"Height adjusted to {new_height}px to maintain aspect ratio.")
 
         if st.button("Apply Resize"):
             resized_image = image.resize((int(new_width), int(new_height)))
