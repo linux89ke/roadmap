@@ -55,14 +55,8 @@ with tab1:
         
         for uploaded_file in uploaded_files_conv:
             with st.expander(f"File: {uploaded_file.name}", expanded=True):
-                col1, col2 = st.columns([1, 1])
-                
                 # Open Image
                 image = Image.open(uploaded_file)
-                
-                # Show Original
-                with col1:
-                    st.image(image, caption=f"Original ({uploaded_file.type})", use_container_width=True)
 
                 # Convert Logic
                 # JPEG doesn't support transparency, so we convert RGBA to RGB with white background
@@ -71,14 +65,12 @@ with tab1:
                 
                 converted_bytes = convert_to_bytes(image, format="JPEG")
                 
-                with col2:
-                    st.image(converted_bytes, caption="Converted (JPEG)", use_container_width=True)
-                    st.download_button(
-                        label=f"⬇️ Download {uploaded_file.name.split('.')[0]}.jpg",
-                        data=converted_bytes,
-                        file_name=f"{uploaded_file.name.split('.')[0]}.jpg",
-                        mime="image/jpeg"
-                    )
+                st.download_button(
+                    label=f"⬇️ Download {uploaded_file.name.split('.')[0]}.jpg",
+                    data=converted_bytes,
+                    file_name=f"{uploaded_file.name.split('.')[0]}.jpg",
+                    mime="image/jpeg"
+                )
 
 # ==========================
 # TAB 2: COMPRESSOR
