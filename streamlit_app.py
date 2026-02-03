@@ -31,7 +31,7 @@ TEMPLATE_DATA = {
     'cost': 1,          
     'supplier': 'MarketPlace forfeited items',
     'shipment_type': 'Own Warehouse',
-    'supplier_simple': '', 
+    'supplier_simple': '-', # UPDATED: Now defaults to a dash
     'supplier_duplicate': '', 
 }
 
@@ -116,6 +116,7 @@ def load_category_data():
     return pd.DataFrame(), {}, []
 
 def create_output_df(product_list):
+    # We include supplier_duplicate here internally
     standard_columns = [
         'sku_supplier_config', 'supplier_simple', 'seller_sku', 'name', 'brand', 'categories', 
         'product_weight', 'package_type', 'package_quantities', 
@@ -156,7 +157,6 @@ def save_product_callback():
         'package_content': package_content_html, 
         'sku_supplier_config': sku,
         'seller_sku': sku,
-        'supplier_simple': sku, 
         'categories': code, 
         'brand': st.session_state['prod_brand'],
         'color': st.session_state['prod_color'],
@@ -323,7 +323,6 @@ if st.session_state.products:
     final_df = create_output_df(st.session_state.products)
     
     # --- RENAME FOR EXPORT ONLY ---
-    # We create a copy for the CSV so we don't break the Streamlit viewer
     export_df = final_df.copy()
     export_columns = list(export_df.columns)
     # Rename 'supplier_duplicate' to 'supplier' -> results in two 'supplier' columns
@@ -341,7 +340,6 @@ if st.session_state.products:
     st.download_button("Download Generated CSV File", data=csv, file_name=final_filename, mime="text/csv")
     
     with st.expander("View Raw Data Table"):
-        # We display final_df (with unique column names) to avoid the error
         st.dataframe(final_df, use_container_width=True)
 else:
     st.info("No products added yet.")
