@@ -31,7 +31,8 @@ TEMPLATE_DATA = {
     'cost': 1,          
     'supplier': 'MarketPlace forfeited items',
     'shipment_type': 'Own Warehouse',
-    'supplier_simple': '', # Added new column placeholder
+    'supplier_simple': '', 
+    'supplier_2': '', # Internal placeholder for the duplicate column
 }
 
 # --- INITIALIZE SESSION STATE ---
@@ -115,11 +116,12 @@ def load_category_data():
     return pd.DataFrame(), {}, []
 
 def create_output_df(product_list):
+    # We include supplier_2 here internally
     standard_columns = [
         'sku_supplier_config', 'supplier_simple', 'seller_sku', 'name', 'brand', 'categories', 
         'product_weight', 'package_type', 'package_quantities', 
         'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 'size',
-        'description', 'short_description', 'package_content', 'supplier', 
+        'description', 'short_description', 'package_content', 'supplier', 'supplier_2',
         'shipment_type'
     ]
     df = pd.DataFrame(product_list)
@@ -155,7 +157,7 @@ def save_product_callback():
         'package_content': package_content_html, 
         'sku_supplier_config': sku,
         'seller_sku': sku,
-        'supplier_simple': sku, # Populated with the generated SKU
+        'supplier_simple': sku, 
         'categories': code, 
         'brand': st.session_state['prod_brand'],
         'color': st.session_state['prod_color'],
@@ -163,6 +165,11 @@ def save_product_callback():
         'size': st.session_state.get('prod_size', ''), 
         **TEMPLATE_DATA
     }
+    
+    # LOGIC: Duplicate Supplier and Remove Spaces
+    raw_supplier = new_product.get('supplier', '')
+    # This creates the second value with no spaces
+    new_product['supplier_2'] = raw_supplier.replace(" ", "")
 
     if st.session_state['custom_col_name'] and st.session_state['custom_col_val']:
         new_product[st.session_state['custom_col_name']] = st.session_state['custom_col_val']
@@ -316,9 +323,22 @@ if st.session_state.products:
                 st.rerun()
 
     final_df = create_output_df(st.session_state.products)
+    
+    # RENAME columns just for export to allow duplicate 'supplier' header
+    # We rename 'supplier_2' (which has the spaceless text) to 'supplier'
+    export_columns = list(final_df.columns)
+    export_columns = ['supplier' if col == 'supplier_2' else col for col in export_columns]
+    final_df.columns = export_columns
+    
     csv = final_df.to_csv(index=False).encode('utf-8')
     st.markdown("---")
-    st.download_button("Download Generated CSV File", data=csv, file_name="products_export.csv", mime="text/csv")
+    
+    # GENERATE FILENAME
+    first_name = st.session_state.products[0]['name'] if st.session_state.products else "Export"
+    clean_name = re.sub(r'[^a-zA-Z0-9]', '_', first_name).strip('_')
+    final_filename = f"{clean_name}_warehouse_RTv.csv"
+    
+    st.download_button("Download Generated CSV File", data=csv, file_name=final_filename, mime="text/csv")
     
     with st.expander("View Raw Data Table"):
         st.dataframe(final_df, use_container_width=True)
