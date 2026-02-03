@@ -25,12 +25,13 @@ TEMPLATE_DATA = {
     'product_weight': 1,
     'package_type': '', 
     'package_quantities': '', 
-    'variation': '-',   # DEFAULT IS DASH
+    'variation': '-',   
     'price': 100000,
     'tax_class': 'Default',
-    'cost': 1,          # LOCKED TO 1
+    'cost': 1,          
     'supplier': 'MarketPlace forfeited items',
     'shipment_type': 'Own Warehouse',
+    'supplier_simple': '', # Added new column placeholder
 }
 
 # --- INITIALIZE SESSION STATE ---
@@ -63,7 +64,6 @@ for key in default_keys:
 # --- HELPER FUNCTIONS ---
 
 def format_to_html_list(text):
-    """Fallback for simple text areas."""
     if not text: return ''
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     if not lines: return ''
@@ -85,7 +85,7 @@ def load_product_for_edit(index):
     st.session_state['prod_brand'] = product.get('brand', '')
     st.session_state['prod_color'] = product.get('color', '')
     st.session_state['prod_material'] = product.get('main_material', '')
-    st.session_state['prod_size'] = product.get('size', '') # Load Size
+    st.session_state['prod_size'] = product.get('size', '') 
     
     st.session_state.quill_content_full = product.get('description', '')
     st.session_state.quill_content_short = product.get('short_description', '')
@@ -109,7 +109,6 @@ def load_category_data():
     if os.path.exists(FILE_NAME_CSV):
         df = pd.read_csv(FILE_NAME_CSV, dtype=str)
         df['category'] = df['category'].str.strip()
-        # Create root_category based on the first part of the path (e.g., Fashion\Baby -> Fashion)
         df['root_category'] = df['category'].apply(lambda x: str(x).split('\\')[0] if pd.notna(x) else "Other")
         path_to_code = df.set_index('category')['categories'].to_dict()
         return df, path_to_code, sorted(df['root_category'].unique().tolist())
@@ -117,7 +116,7 @@ def load_category_data():
 
 def create_output_df(product_list):
     standard_columns = [
-        'sku_supplier_config', 'seller_sku', 'name', 'brand', 'categories', 
+        'sku_supplier_config', 'supplier_simple', 'seller_sku', 'name', 'brand', 'categories', 
         'product_weight', 'package_type', 'package_quantities', 
         'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 'size',
         'description', 'short_description', 'package_content', 'supplier', 
@@ -156,6 +155,7 @@ def save_product_callback():
         'package_content': package_content_html, 
         'sku_supplier_config': sku,
         'seller_sku': sku,
+        'supplier_simple': sku, # Populated with the generated SKU
         'categories': code, 
         'brand': st.session_state['prod_brand'],
         'color': st.session_state['prod_color'],
@@ -220,7 +220,6 @@ with tab2:
             cat_sel_b = st.selectbox(f"Found {len(found_paths)} results:", options=[DEFAULT_CATEGORY_PATH] + found_paths, key='cat_selector_b')
             if cat_sel_b != DEFAULT_CATEGORY_PATH:
                 selected_category_path = cat_sel_b
-                # Lookup root for search result to check for Fashion
                 if not cat_df.empty:
                     row = cat_df[cat_df['category'] == cat_sel_b]
                     if not row.empty:
@@ -234,7 +233,6 @@ if selected_category_path != DEFAULT_CATEGORY_PATH:
     final_code = path_to_code.get(selected_category_path, '')
     st.success(f"Selected: {selected_category_path} (Code: {final_code})")
     
-    # Strict check: Is the root category exactly "Fashion"?
     if selected_root_check == "Fashion":
         is_fashion = True
 else:
