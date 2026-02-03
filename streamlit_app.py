@@ -28,7 +28,7 @@ TEMPLATE_DATA = {
     'variation': '?',
     'price': 100000,
     'tax_class': 'Default',
-    'cost': 1,  # Fixed to 1
+    'cost': 1,  # LOCKED TO 1
     'supplier': 'MarketPlace forfeited items',
     'shipment_type': 'Own Warehouse',
 }
@@ -63,7 +63,7 @@ for key in default_keys:
 # --- HELPER FUNCTIONS ---
 
 def format_to_html_list(text):
-    """Fallback for In the Box text area."""
+    """Fallback for 'In the Box' which remains a simple text area."""
     if not text: return ''
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     if not lines: return ''
@@ -86,9 +86,11 @@ def load_product_for_edit(index):
     st.session_state['prod_color'] = product.get('color', '')
     st.session_state['prod_material'] = product.get('main_material', '')
     
+    # Load Quill Contents
     st.session_state.quill_content_full = product.get('description', '')
     st.session_state.quill_content_short = product.get('short_description', '')
     
+    # Clean 'In the box' for text area
     box_html = product.get('package_content', '')
     st.session_state['prod_in_box'] = re.sub('<[^<]+?>', '', box_html).strip()
     
@@ -132,6 +134,7 @@ def save_product_callback():
         st.error("Product Name is required.")
         return
     
+    # Resolve Category
     cat_path = st.session_state.get('cat_selector_a', DEFAULT_CATEGORY_PATH)
     if cat_path == DEFAULT_CATEGORY_PATH:
         cat_path = st.session_state.get('cat_selector_b', DEFAULT_CATEGORY_PATH)
@@ -143,6 +146,7 @@ def save_product_callback():
 
     sku = generate_sku_config(st.session_state['prod_name'])
     
+    # In the box auto-formatter
     box_raw = st.session_state['prod_in_box'].strip()
     package_content_html = format_to_html_list(box_raw if box_raw else st.session_state['prod_name'])
 
@@ -165,11 +169,12 @@ def save_product_callback():
 
     if st.session_state.edit_index is not None:
         st.session_state.products[st.session_state.edit_index] = new_product
+        st.toast("Product Updated")
     else:
         st.session_state.products.append(new_product)
+        st.toast("Product Added")
 
     clear_form()
-    st.toast("Product Saved")
 
 # --- UI ---
 cat_df, path_to_code, root_list = load_category_data()
@@ -181,25 +186,55 @@ with st.sidebar:
         clear_form()
         st.rerun()
 
-st.title("Product Bulk Creator")
+st.title("Product Manager")
 
+# --- 1. CATEGORY SELECTION ---
 st.header("1. Find Category")
 tab1, tab2 = st.tabs(["Browse by Department", "Global Search"])
+
+selected_category_path = DEFAULT_CATEGORY_PATH
+
+# Tab 1: Browse
 with tab1:
     col_dept, col_cat = st.columns([1, 2])
     with col_dept:
         selected_root = st.selectbox("Step A: Choose Department", options=["Select Department"] + root_list, key='dept_selector')
     with col_cat:
-        filtered_paths = sorted(cat_df[cat_df['root_category'] == selected_root]['category'].dropna().tolist()) if selected_root != "Select Department" else []
-        st.selectbox("Step B: Select Specific Category", options=[DEFAULT_CATEGORY_PATH] + filtered_paths, key='cat_selector_a')
+        if selected_root and selected_root != "Select Department":
+            filtered_paths = sorted(cat_df[cat_df['root_category'] == selected_root]['category'].dropna().unique().tolist())
+            cat_sel_a = st.selectbox("Step B: Select Specific Category", options=[DEFAULT_CATEGORY_PATH] + filtered_paths, key='cat_selector_a')
+            if cat_sel_a != DEFAULT_CATEGORY_PATH:
+                selected_category_path = cat_sel_a
+        else:
+            st.selectbox("Step B: Select Specific Category", options=["First select a department"], disabled=True)
 
+# Tab 2: Search
 with tab2:
     search_query = st.text_input("Type a keyword", key='search_query')
-    search_results = sorted(cat_df[cat_df['category'].str.contains(search_query, case=False, na=False)]['category'].tolist()) if search_query else []
-    st.selectbox(f"Found {len(search_results)} results:", options=[DEFAULT_CATEGORY_PATH] + search_results, key='cat_selector_b')
+    if search_query:
+        search_results = cat_df[cat_df['category'].str.contains(search_query, case=False, na=False)]
+        found_paths = sorted(search_results['category'].unique().tolist())
+        if found_paths:
+            cat_sel_b = st.selectbox(f"Found {len(found_paths)} results:", options=[DEFAULT_CATEGORY_PATH] + found_paths, key='cat_selector_b')
+            if cat_sel_b != DEFAULT_CATEGORY_PATH:
+                selected_category_path = cat_sel_b
+        else:
+            st.warning("No categories found.")
 
+# --- SHOW SELECTED CATEGORY AND CODE ---
+if selected_category_path != DEFAULT_CATEGORY_PATH:
+    final_code = path_to_code.get(selected_category_path, '')
+    st.success(f"Selected: {selected_category_path} (Code: {final_code})")
+else:
+    st.warning("Please select a category above.")
+
+
+# --- 2. PRODUCT DETAILS FORM ---
 st.markdown("---")
-st.header("2. Product Details")
+if st.session_state.edit_index is not None:
+    st.subheader(f"Editing Product #{st.session_state.edit_index + 1}")
+else:
+    st.header("2. Product Details")
 
 c_name, c_brand = st.columns([3, 1])
 c_name.text_input("Product Name", key='prod_name')
@@ -244,18 +279,32 @@ if st.session_state.products:
     st.markdown("---")
     st.header("3. Manage and Download Data")
     
+    st.write(f"Total Products: {len(st.session_state.products)}")
+
     for i, p in enumerate(st.session_state.products):
-        c1, c2, c3, c4 = st.columns([4, 2, 1, 1])
-        c1.write(p['name'])
-        c2.text(p['categories'])
-        c3.button("Edit", key=f"e_{i}", on_click=load_product_for_edit, args=(i,))
-        if c4.button("Delete", key=f"d_{i}"):
-            st.session_state.products.pop(i)
-            st.rerun()
+        with st.container():
+            st.markdown("---")
+            c1, c2, c3, c4 = st.columns([4, 2, 1, 1])
+            
+            is_editing = (st.session_state.edit_index == i)
+            name_display = f"Editing: {p['name']}" if is_editing else p['name']
+            
+            c1.write(f"**{name_display}**")
+            c2.text(p['categories'])
+            c3.button("Edit", key=f"e_{i}", on_click=load_product_for_edit, args=(i,))
+            if c4.button("Delete", key=f"d_{i}"):
+                st.session_state.products.pop(i)
+                # If editing this item, reset form
+                if st.session_state.edit_index == i:
+                    clear_form()
+                st.rerun()
 
     final_df = create_output_df(st.session_state.products)
     csv = final_df.to_csv(index=False).encode('utf-8')
+    st.markdown("---")
     st.download_button("Download Generated CSV File", data=csv, file_name="products_export.csv", mime="text/csv")
     
     with st.expander("View Raw Data Table"):
         st.dataframe(final_df, use_container_width=True)
+else:
+    st.info("No products added yet.")
