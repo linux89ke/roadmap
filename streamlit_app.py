@@ -28,7 +28,7 @@ TEMPLATE_DATA = {
     'variation': '?',
     'price': 100000,
     'tax_class': 'Default',
-    'cost': 1,  # LOCKED TO 1
+    'cost': 1,  # Fixed to 1
     'supplier': 'MarketPlace forfeited items',
     'shipment_type': 'Own Warehouse',
 }
@@ -63,6 +63,7 @@ for key in default_keys:
 # --- HELPER FUNCTIONS ---
 
 def format_to_html_list(text):
+    """Fallback for In the Box text area."""
     if not text: return ''
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     if not lines: return ''
@@ -112,6 +113,20 @@ def load_category_data():
         return df, path_to_code, sorted(df['root_category'].unique().tolist())
     return pd.DataFrame(), {}, []
 
+def create_output_df(product_list):
+    standard_columns = [
+        'sku_supplier_config', 'seller_sku', 'name', 'brand', 'categories', 
+        'product_weight', 'package_type', 'package_quantities', 
+        'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 
+        'description', 'short_description', 'package_content', 'supplier', 
+        'shipment_type'
+    ]
+    df = pd.DataFrame(product_list)
+    for col in standard_columns:
+        if col not in df.columns: df[col] = ""
+    custom_columns = [c for c in df.columns if c not in standard_columns]
+    return df[standard_columns + custom_columns].fillna('')
+
 def save_product_callback():
     if not st.session_state['prod_name']:
         st.error("Product Name is required.")
@@ -159,24 +174,40 @@ def save_product_callback():
 # --- UI ---
 cat_df, path_to_code, root_list = load_category_data()
 
-st.title("Bulk Product Creator")
+with st.sidebar:
+    st.header("Options")
+    if st.button("Reset Entire App", type="primary"):
+        st.session_state.products = []
+        clear_form()
+        st.rerun()
 
-st.header("1. Category")
-t1, t2 = st.tabs(["Browse", "Search"])
-with t1:
-    c1, c2 = st.columns(2)
-    with c1: root = st.selectbox("Dept", ["Select"] + root_list, key="d")
-    with c2: st.selectbox("Category", [DEFAULT_CATEGORY_PATH] + sorted(cat_df[cat_df['root_category']==root]['category'].tolist()) if root != "Select" else [DEFAULT_CATEGORY_PATH], key="cat_selector_a")
-with t2:
-    s = st.text_input("Search")
-    st.selectbox("Results", [DEFAULT_CATEGORY_PATH] + sorted(cat_df[cat_df['category'].str.contains(s, case=False, na=False)]['category'].tolist()) if s else [DEFAULT_CATEGORY_PATH], key="cat_selector_b")
+st.title("Product Bulk Creator")
+
+st.header("1. Find Category")
+tab1, tab2 = st.tabs(["Browse by Department", "Global Search"])
+with tab1:
+    col_dept, col_cat = st.columns([1, 2])
+    with col_dept:
+        selected_root = st.selectbox("Step A: Choose Department", options=["Select Department"] + root_list, key='dept_selector')
+    with col_cat:
+        filtered_paths = sorted(cat_df[cat_df['root_category'] == selected_root]['category'].dropna().tolist()) if selected_root != "Select Department" else []
+        st.selectbox("Step B: Select Specific Category", options=[DEFAULT_CATEGORY_PATH] + filtered_paths, key='cat_selector_a')
+
+with tab2:
+    search_query = st.text_input("Type a keyword", key='search_query')
+    search_results = sorted(cat_df[cat_df['category'].str.contains(search_query, case=False, na=False)]['category'].tolist()) if search_query else []
+    st.selectbox(f"Found {len(search_results)} results:", options=[DEFAULT_CATEGORY_PATH] + search_results, key='cat_selector_b')
 
 st.markdown("---")
-st.header("2. Details")
+st.header("2. Product Details")
 
-cn, cb = st.columns([3, 1])
-cn.text_input("Product Name", key='prod_name')
-cb.text_input("Brand", key='prod_brand')
+c_name, c_brand = st.columns([3, 1])
+c_name.text_input("Product Name", key='prod_name')
+c_brand.text_input("Brand", key='prod_brand')
+
+col_clr, col_mat = st.columns(2)
+col_clr.text_input("Color", key='prod_color')
+col_mat.text_input("Main Material", key='prod_material')
 
 st.subheader("Full Description")
 st.session_state['current_quill_full'] = st_quill(
@@ -197,20 +228,34 @@ st.session_state['current_quill_short'] = st_quill(
 st.subheader("What's in the Box")
 st.text_area("Contents (one per line)", key='prod_in_box')
 
-if st.button("Save Product", type="primary", on_click=save_product_callback):
-    pass
+st.markdown("---")
+c_c1, c_c2 = st.columns(2)
+c_c1.text_input("Custom Column Name", key='custom_col_name')
+c_c2.text_input("Custom Value", key='custom_col_val')
 
-# --- EXPORT ---
+if st.session_state.edit_index is not None:
+    st.button("Update Product", on_click=save_product_callback, type="primary")
+    st.button("Cancel Edit", on_click=clear_form)
+else:
+    st.button("Add Product", on_click=save_product_callback, type="primary")
+
+# --- 3. MANAGE & DOWNLOAD ---
 if st.session_state.products:
     st.markdown("---")
-    df = pd.DataFrame(st.session_state.products)
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download CSV", data=csv, file_name="export.csv", mime="text/csv")
+    st.header("3. Manage and Download Data")
     
     for i, p in enumerate(st.session_state.products):
-        col1, col2, col3 = st.columns([5, 1, 1])
-        col1.write(p['name'])
-        col2.button("Edit", key=f"ed_{i}", on_click=load_product_for_edit, args=(i,))
-        if col3.button("Delete", key=f"de_{i}"):
+        c1, c2, c3, c4 = st.columns([4, 2, 1, 1])
+        c1.write(p['name'])
+        c2.text(p['categories'])
+        c3.button("Edit", key=f"e_{i}", on_click=load_product_for_edit, args=(i,))
+        if c4.button("Delete", key=f"d_{i}"):
             st.session_state.products.pop(i)
             st.rerun()
+
+    final_df = create_output_df(st.session_state.products)
+    csv = final_df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download Generated CSV File", data=csv, file_name="products_export.csv", mime="text/csv")
+    
+    with st.expander("View Raw Data Table"):
+        st.dataframe(final_df, use_container_width=True)
