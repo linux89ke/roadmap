@@ -25,10 +25,10 @@ TEMPLATE_DATA = {
     'product_weight': 1,
     'package_type': '', 
     'package_quantities': '', 
-    'variation': '?',
+    'variation': '-',   # DEFAULT IS DASH
     'price': 100000,
     'tax_class': 'Default',
-    'cost': 1,  # LOCKED TO 1
+    'cost': 1,          # LOCKED TO 1
     'supplier': 'MarketPlace forfeited items',
     'shipment_type': 'Own Warehouse',
 }
@@ -36,7 +36,7 @@ TEMPLATE_DATA = {
 # --- INITIALIZE SESSION STATE ---
 default_keys = [
     'prod_name', 'prod_brand', 'prod_color', 'prod_material', 
-    'prod_in_box', 'custom_col_name', 'custom_col_val'
+    'prod_in_box', 'prod_size', 'custom_col_name', 'custom_col_val'
 ]
 
 if 'products' not in st.session_state:
@@ -63,7 +63,7 @@ for key in default_keys:
 # --- HELPER FUNCTIONS ---
 
 def format_to_html_list(text):
-    """Fallback for 'In the Box' which remains a simple text area."""
+    """Fallback for simple text areas."""
     if not text: return ''
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     if not lines: return ''
@@ -85,12 +85,11 @@ def load_product_for_edit(index):
     st.session_state['prod_brand'] = product.get('brand', '')
     st.session_state['prod_color'] = product.get('color', '')
     st.session_state['prod_material'] = product.get('main_material', '')
+    st.session_state['prod_size'] = product.get('size', '') # Load Size
     
-    # Load Quill Contents
     st.session_state.quill_content_full = product.get('description', '')
     st.session_state.quill_content_short = product.get('short_description', '')
     
-    # Clean 'In the box' for text area
     box_html = product.get('package_content', '')
     st.session_state['prod_in_box'] = re.sub('<[^<]+?>', '', box_html).strip()
     
@@ -110,6 +109,7 @@ def load_category_data():
     if os.path.exists(FILE_NAME_CSV):
         df = pd.read_csv(FILE_NAME_CSV, dtype=str)
         df['category'] = df['category'].str.strip()
+        # Create root_category based on the first part of the path (e.g., Fashion\Baby -> Fashion)
         df['root_category'] = df['category'].apply(lambda x: str(x).split('\\')[0] if pd.notna(x) else "Other")
         path_to_code = df.set_index('category')['categories'].to_dict()
         return df, path_to_code, sorted(df['root_category'].unique().tolist())
@@ -119,7 +119,7 @@ def create_output_df(product_list):
     standard_columns = [
         'sku_supplier_config', 'seller_sku', 'name', 'brand', 'categories', 
         'product_weight', 'package_type', 'package_quantities', 
-        'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 
+        'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 'size',
         'description', 'short_description', 'package_content', 'supplier', 
         'shipment_type'
     ]
@@ -146,7 +146,6 @@ def save_product_callback():
 
     sku = generate_sku_config(st.session_state['prod_name'])
     
-    # In the box auto-formatter
     box_raw = st.session_state['prod_in_box'].strip()
     package_content_html = format_to_html_list(box_raw if box_raw else st.session_state['prod_name'])
 
@@ -161,6 +160,7 @@ def save_product_callback():
         'brand': st.session_state['prod_brand'],
         'color': st.session_state['prod_color'],
         'main_material': st.session_state['prod_material'],
+        'size': st.session_state.get('prod_size', ''), 
         **TEMPLATE_DATA
     }
 
@@ -193,6 +193,7 @@ st.header("1. Find Category")
 tab1, tab2 = st.tabs(["Browse by Department", "Global Search"])
 
 selected_category_path = DEFAULT_CATEGORY_PATH
+selected_root_check = "" 
 
 # Tab 1: Browse
 with tab1:
@@ -205,6 +206,7 @@ with tab1:
             cat_sel_a = st.selectbox("Step B: Select Specific Category", options=[DEFAULT_CATEGORY_PATH] + filtered_paths, key='cat_selector_a')
             if cat_sel_a != DEFAULT_CATEGORY_PATH:
                 selected_category_path = cat_sel_a
+                selected_root_check = selected_root 
         else:
             st.selectbox("Step B: Select Specific Category", options=["First select a department"], disabled=True)
 
@@ -218,13 +220,23 @@ with tab2:
             cat_sel_b = st.selectbox(f"Found {len(found_paths)} results:", options=[DEFAULT_CATEGORY_PATH] + found_paths, key='cat_selector_b')
             if cat_sel_b != DEFAULT_CATEGORY_PATH:
                 selected_category_path = cat_sel_b
+                # Lookup root for search result to check for Fashion
+                if not cat_df.empty:
+                    row = cat_df[cat_df['category'] == cat_sel_b]
+                    if not row.empty:
+                        selected_root_check = row.iloc[0]['root_category']
         else:
             st.warning("No categories found.")
 
-# --- SHOW SELECTED CATEGORY AND CODE ---
+# --- CHECK FOR FASHION ---
+is_fashion = False
 if selected_category_path != DEFAULT_CATEGORY_PATH:
     final_code = path_to_code.get(selected_category_path, '')
     st.success(f"Selected: {selected_category_path} (Code: {final_code})")
+    
+    # Strict check: Is the root category exactly "Fashion"?
+    if selected_root_check == "Fashion":
+        is_fashion = True
 else:
     st.warning("Please select a category above.")
 
@@ -240,9 +252,16 @@ c_name, c_brand = st.columns([3, 1])
 c_name.text_input("Product Name", key='prod_name')
 c_brand.text_input("Brand", key='prod_brand')
 
-col_clr, col_mat = st.columns(2)
-col_clr.text_input("Color", key='prod_color')
-col_mat.text_input("Main Material", key='prod_material')
+# Dynamic Columns: If Fashion, show Size
+if is_fashion:
+    col_clr, col_mat, col_size = st.columns([1, 1, 1])
+    col_clr.text_input("Color", key='prod_color')
+    col_mat.text_input("Main Material", key='prod_material')
+    col_size.text_input("Size", key='prod_size', placeholder="e.g., M, L, XL, 42")
+else:
+    col_clr, col_mat = st.columns(2)
+    col_clr.text_input("Color", key='prod_color')
+    col_mat.text_input("Main Material", key='prod_material')
 
 st.subheader("Full Description")
 st.session_state['current_quill_full'] = st_quill(
@@ -294,7 +313,6 @@ if st.session_state.products:
             c3.button("Edit", key=f"e_{i}", on_click=load_product_for_edit, args=(i,))
             if c4.button("Delete", key=f"d_{i}"):
                 st.session_state.products.pop(i)
-                # If editing this item, reset form
                 if st.session_state.edit_index == i:
                     clear_form()
                 st.rerun()
