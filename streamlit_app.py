@@ -32,7 +32,7 @@ TEMPLATE_DATA = {
     'supplier': 'MarketPlace forfeited items',
     'shipment_type': 'Own Warehouse',
     'supplier_simple': '', 
-    'supplier_2': '', # Internal placeholder for the duplicate column
+    'supplier_duplicate': '', 
 }
 
 # --- INITIALIZE SESSION STATE ---
@@ -116,12 +116,11 @@ def load_category_data():
     return pd.DataFrame(), {}, []
 
 def create_output_df(product_list):
-    # We include supplier_2 here internally
     standard_columns = [
         'sku_supplier_config', 'supplier_simple', 'seller_sku', 'name', 'brand', 'categories', 
         'product_weight', 'package_type', 'package_quantities', 
         'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 'size',
-        'description', 'short_description', 'package_content', 'supplier', 'supplier_2',
+        'description', 'short_description', 'package_content', 'supplier', 'supplier_duplicate',
         'shipment_type'
     ]
     df = pd.DataFrame(product_list)
@@ -168,8 +167,7 @@ def save_product_callback():
     
     # LOGIC: Duplicate Supplier and Remove Spaces
     raw_supplier = new_product.get('supplier', '')
-    # This creates the second value with no spaces
-    new_product['supplier_2'] = raw_supplier.replace(" ", "")
+    new_product['supplier_duplicate'] = raw_supplier.replace(" ", "")
 
     if st.session_state['custom_col_name'] and st.session_state['custom_col_val']:
         new_product[st.session_state['custom_col_name']] = st.session_state['custom_col_val']
@@ -324,13 +322,15 @@ if st.session_state.products:
 
     final_df = create_output_df(st.session_state.products)
     
-    # RENAME columns just for export to allow duplicate 'supplier' header
-    # We rename 'supplier_2' (which has the spaceless text) to 'supplier'
-    export_columns = list(final_df.columns)
-    export_columns = ['supplier' if col == 'supplier_2' else col for col in export_columns]
-    final_df.columns = export_columns
+    # --- RENAME FOR EXPORT ONLY ---
+    # We create a copy for the CSV so we don't break the Streamlit viewer
+    export_df = final_df.copy()
+    export_columns = list(export_df.columns)
+    # Rename 'supplier_duplicate' to 'supplier' -> results in two 'supplier' columns
+    export_columns = ['supplier' if col == 'supplier_duplicate' else col for col in export_columns]
+    export_df.columns = export_columns
     
-    csv = final_df.to_csv(index=False).encode('utf-8')
+    csv = export_df.to_csv(index=False).encode('utf-8')
     st.markdown("---")
     
     # GENERATE FILENAME
@@ -341,6 +341,7 @@ if st.session_state.products:
     st.download_button("Download Generated CSV File", data=csv, file_name=final_filename, mime="text/csv")
     
     with st.expander("View Raw Data Table"):
+        # We display final_df (with unique column names) to avoid the error
         st.dataframe(final_df, use_container_width=True)
 else:
     st.info("No products added yet.")
