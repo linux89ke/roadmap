@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import re
-import base64
 import os
 
 # --- IMPORT QUILL ---
@@ -83,6 +82,8 @@ def load_product_for_edit(index):
     st.session_state['prod_brand'] = product.get('brand', '')
     st.session_state['prod_color'] = product.get('color', '')
     st.session_state['prod_material'] = product.get('main_material', '')
+    
+    # Specifics
     st.session_state['prod_size'] = product.get('size', '') 
     st.session_state['prod_author'] = product.get('author', '') 
     st.session_state['prod_binding'] = product.get('binding', '') 
@@ -227,14 +228,25 @@ with tab2:
         else:
             st.warning("No categories found.")
 
+# --- CHECK FOR SPECIAL CATEGORIES ---
+if selected_category_path != DEFAULT_CATEGORY_PATH:
+    final_code = path_to_code.get(selected_category_path, '')
+    st.success(f"Selected: {selected_category_path} (Code: {final_code})")
+else:
+    st.warning("Please select a category above.")
+
+
 # --- DYNAMIC DEFAULTS BASED ON CATEGORY ---
 current_brand_default = DEFAULT_BRAND
 if selected_root_check == "Fashion":
     current_brand_default = "Fashion"
+elif selected_root_check == "Books":
+    current_brand_default = "Jumia Book"
 
-# Apply default brand only if the field is empty or resetting
-if not st.session_state['prod_brand'] or (st.session_state['prod_brand'] in [DEFAULT_BRAND, "Fashion"]):
+# Apply default brand only if the field is empty or user hasn't typed a custom one yet
+if not st.session_state['prod_brand'] or (st.session_state['prod_brand'] in [DEFAULT_BRAND, "Fashion", "Jumia Book"]):
     st.session_state['prod_brand'] = current_brand_default
+
 
 # --- 2. PRODUCT DETAILS FORM ---
 st.markdown("---")
@@ -247,27 +259,29 @@ c_name, c_brand = st.columns([3, 1])
 c_name.text_input("Product Name", key='prod_name')
 c_brand.text_input("Brand", key='prod_brand')
 
-# Dynamic Columns for Fashion
+# --- DYNAMIC INPUT FIELDS ---
 if selected_root_check == "Fashion":
     col_clr, col_mat, col_size = st.columns([1, 1, 1])
     col_clr.text_input("Color", key='prod_color')
     col_mat.text_input("Main Material", key='prod_material', value=DEFAULT_MATERIAL)
     col_size.text_input("Size", key='prod_size', placeholder="e.g., M, L, XL, 42")
 
-# Dynamic Columns for Books
 elif selected_root_check == "Books":
     col_auth, col_bind = st.columns(2)
     col_auth.text_input("Author", key='prod_author')
-    col_bind.selectbox("Binding", options=["Paperback", "Hardcover", "Spiral", "Other"], key='prod_binding')
+    col_bind.selectbox("Binding", options=["-", "Paperback", "Hardcover", "Spiral Bound", "Board Book"], key='prod_binding')
     
-    # Hide standard color/material or set to default
+    # Hide unrelated fields
     st.session_state['prod_color'] = ""
     st.session_state['prod_material'] = "-"
+    st.session_state['prod_size'] = ""
 
 else:
+    # Standard Generic Item
     col_clr, col_mat = st.columns(2)
     col_clr.text_input("Color", key='prod_color')
     col_mat.text_input("Main Material", key='prod_material', value=DEFAULT_MATERIAL)
+
 
 st.subheader("Full Description")
 st.session_state['current_quill_full'] = st_quill(
@@ -321,14 +335,18 @@ if st.session_state.products:
                 st.rerun()
 
     final_df = create_output_df(st.session_state.products)
+    
+    # --- RENAME FOR EXPORT ONLY ---
     export_df = final_df.copy()
     export_columns = list(export_df.columns)
+    # Rename 'supplier_duplicate' to 'supplier' -> results in two 'supplier' columns
     export_columns = ['supplier' if col == 'supplier_duplicate' else col for col in export_columns]
     export_df.columns = export_columns
     
     csv = export_df.to_csv(index=False).encode('utf-8')
     st.markdown("---")
     
+    # GENERATE FILENAME
     first_name = st.session_state.products[0]['name'] if st.session_state.products else "Export"
     clean_name = re.sub(r'[^a-zA-Z0-9]', '_', first_name).strip('_')
     final_filename = f"{clean_name}_warehouse_RTv.csv"
