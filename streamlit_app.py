@@ -38,7 +38,7 @@ TEMPLATE_DATA = {
 default_keys = [
     'prod_name', 'prod_brand', 'prod_color', 'prod_material', 
     'prod_in_box', 'prod_size', 'custom_col_name', 'custom_col_val',
-    'prod_author', 'prod_binding' # Added for Books
+    'prod_author', 'prod_binding' # <--- ENSURE THESE EXIST
 ]
 
 if 'products' not in st.session_state:
@@ -110,17 +110,20 @@ def load_category_data():
     if os.path.exists(FILE_NAME_CSV):
         df = pd.read_csv(FILE_NAME_CSV, dtype=str)
         df['category'] = df['category'].str.strip()
+        # Create Root Category
         df['root_category'] = df['category'].apply(lambda x: str(x).split('\\')[0] if pd.notna(x) else "Other")
         path_to_code = df.set_index('category')['categories'].to_dict()
         return df, path_to_code, sorted(df['root_category'].unique().tolist())
     return pd.DataFrame(), {}, []
 
 def create_output_df(product_list):
+    # DEFINE ALL EXPORT COLUMNS HERE
     standard_columns = [
         'sku_supplier_config', 'supplier_simple', 'seller_sku', 'name', 'brand', 'categories', 
         'product_weight', 'package_type', 'package_quantities', 
         'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 'size',
-        'author', 'binding', 'description', 'short_description', 'package_content', 
+        'author', 'binding', # <--- NEW COLUMNS
+        'description', 'short_description', 'package_content', 
         'supplier', 'supplier_duplicate', 'shipment_type'
     ]
     df = pd.DataFrame(product_list)
@@ -159,8 +162,8 @@ def save_product_callback():
         'color': st.session_state['prod_color'],
         'main_material': st.session_state['prod_material'],
         'size': st.session_state.get('prod_size', ''), 
-        'author': st.session_state.get('prod_author', ''),
-        'binding': st.session_state.get('prod_binding', ''),
+        'author': st.session_state.get('prod_author', ''),     # <--- SAVE AUTHOR
+        'binding': st.session_state.get('prod_binding', ''),   # <--- SAVE BINDING
         **TEMPLATE_DATA
     }
     
@@ -232,19 +235,21 @@ with tab2:
 if selected_category_path != DEFAULT_CATEGORY_PATH:
     final_code = path_to_code.get(selected_category_path, '')
     st.success(f"Selected: {selected_category_path} (Code: {final_code})")
-else:
-    st.warning("Please select a category above.")
+    # DEBUG: Uncomment the line below if you suspect your CSV category names are different
+    # st.write(f"Detected Root Category: {selected_root_check}") 
 
 
 # --- DYNAMIC DEFAULTS BASED ON CATEGORY ---
 current_brand_default = DEFAULT_BRAND
+
 if selected_root_check == "Fashion":
     current_brand_default = "Fashion"
 elif selected_root_check == "Books":
     current_brand_default = "Jumia Book"
 
-# Apply default brand only if the field is empty or user hasn't typed a custom one yet
-if not st.session_state['prod_brand'] or (st.session_state['prod_brand'] in [DEFAULT_BRAND, "Fashion", "Jumia Book"]):
+# Apply default brand Logic
+# It updates if the field is empty, OR if it currently holds one of the other system defaults
+if not st.session_state['prod_brand'] or st.session_state['prod_brand'] in [DEFAULT_BRAND, "Fashion", "Jumia Book"]:
     st.session_state['prod_brand'] = current_brand_default
 
 
@@ -267,11 +272,12 @@ if selected_root_check == "Fashion":
     col_size.text_input("Size", key='prod_size', placeholder="e.g., M, L, XL, 42")
 
 elif selected_root_check == "Books":
+    # --- BOOKS SPECIFIC FIELDS ---
     col_auth, col_bind = st.columns(2)
     col_auth.text_input("Author", key='prod_author')
     col_bind.selectbox("Binding", options=["-", "Paperback", "Hardcover", "Spiral Bound", "Board Book"], key='prod_binding')
     
-    # Hide unrelated fields
+    # Hide unrelated fields by setting them to empty/default in background
     st.session_state['prod_color'] = ""
     st.session_state['prod_material'] = "-"
     st.session_state['prod_size'] = ""
