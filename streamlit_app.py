@@ -38,7 +38,7 @@ TEMPLATE_DATA = {
 default_keys = [
     'prod_name', 'prod_brand', 'prod_color', 'prod_material', 
     'prod_in_box', 'prod_size', 'custom_col_name', 'custom_col_val',
-    'prod_author', 'prod_binding' # <--- ENSURE THESE EXIST
+    'prod_author', 'prod_binding' # Added for Books
 ]
 
 if 'products' not in st.session_state:
@@ -110,7 +110,7 @@ def load_category_data():
     if os.path.exists(FILE_NAME_CSV):
         df = pd.read_csv(FILE_NAME_CSV, dtype=str)
         df['category'] = df['category'].str.strip()
-        # Create Root Category
+        # Create Root Category (Department) by splitting the path
         df['root_category'] = df['category'].apply(lambda x: str(x).split('\\')[0] if pd.notna(x) else "Other")
         path_to_code = df.set_index('category')['categories'].to_dict()
         return df, path_to_code, sorted(df['root_category'].unique().tolist())
@@ -122,7 +122,7 @@ def create_output_df(product_list):
         'sku_supplier_config', 'supplier_simple', 'seller_sku', 'name', 'brand', 'categories', 
         'product_weight', 'package_type', 'package_quantities', 
         'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 'size',
-        'author', 'binding', # <--- NEW COLUMNS
+        'author', 'binding', # <--- NEW COLUMNS FOR BOOKS
         'description', 'short_description', 'package_content', 
         'supplier', 'supplier_duplicate', 'shipment_type'
     ]
@@ -235,20 +235,19 @@ with tab2:
 if selected_category_path != DEFAULT_CATEGORY_PATH:
     final_code = path_to_code.get(selected_category_path, '')
     st.success(f"Selected: {selected_category_path} (Code: {final_code})")
-    # DEBUG: Uncomment the line below if you suspect your CSV category names are different
-    # st.write(f"Detected Root Category: {selected_root_check}") 
 
 
-# --- DYNAMIC DEFAULTS BASED ON CATEGORY ---
+# --- DYNAMIC DEFAULTS BASED ON DEPARTMENT ---
+# Logic: Check specific Department names (root categories)
 current_brand_default = DEFAULT_BRAND
 
 if selected_root_check == "Fashion":
     current_brand_default = "Fashion"
-elif selected_root_check == "Books":
+elif selected_root_check == "Books, Movies and Music":
     current_brand_default = "Jumia Book"
 
 # Apply default brand Logic
-# It updates if the field is empty, OR if it currently holds one of the other system defaults
+# Updates if the field is empty OR if it currently holds one of the other system defaults
 if not st.session_state['prod_brand'] or st.session_state['prod_brand'] in [DEFAULT_BRAND, "Fashion", "Jumia Book"]:
     st.session_state['prod_brand'] = current_brand_default
 
@@ -266,27 +265,37 @@ c_brand.text_input("Brand", key='prod_brand')
 
 # --- DYNAMIC INPUT FIELDS ---
 if selected_root_check == "Fashion":
+    # FASHION: Size, Color, Material
     col_clr, col_mat, col_size = st.columns([1, 1, 1])
     col_clr.text_input("Color", key='prod_color')
     col_mat.text_input("Main Material", key='prod_material', value=DEFAULT_MATERIAL)
     col_size.text_input("Size", key='prod_size', placeholder="e.g., M, L, XL, 42")
+    
+    # Hide Books fields
+    st.session_state['prod_author'] = ""
+    st.session_state['prod_binding'] = ""
 
-elif selected_root_check == "Books":
-    # --- BOOKS SPECIFIC FIELDS ---
+elif selected_root_check == "Books, Movies and Music":
+    # BOOKS: Author, Binding
     col_auth, col_bind = st.columns(2)
     col_auth.text_input("Author", key='prod_author')
     col_bind.selectbox("Binding", options=["-", "Paperback", "Hardcover", "Spiral Bound", "Board Book"], key='prod_binding')
     
-    # Hide unrelated fields by setting them to empty/default in background
+    # Hide Fashion/Generic fields
     st.session_state['prod_color'] = ""
     st.session_state['prod_material'] = "-"
     st.session_state['prod_size'] = ""
 
 else:
-    # Standard Generic Item
+    # GENERIC / OTHER: Color, Material
     col_clr, col_mat = st.columns(2)
     col_clr.text_input("Color", key='prod_color')
     col_mat.text_input("Main Material", key='prod_material', value=DEFAULT_MATERIAL)
+    
+    # Hide irrelevant fields
+    st.session_state['prod_size'] = ""
+    st.session_state['prod_author'] = ""
+    st.session_state['prod_binding'] = ""
 
 
 st.subheader("Full Description")
