@@ -31,14 +31,15 @@ TEMPLATE_DATA = {
     'cost': 1,          
     'supplier': 'MarketPlace forfeited items',
     'shipment_type': 'Own Warehouse',
-    'supplier_simple': '-', # UPDATED: Now defaults to a dash
+    'supplier_simple': '-', 
     'supplier_duplicate': '', 
 }
 
 # --- INITIALIZE SESSION STATE ---
 default_keys = [
     'prod_name', 'prod_brand', 'prod_color', 'prod_material', 
-    'prod_in_box', 'prod_size', 'custom_col_name', 'custom_col_val'
+    'prod_in_box', 'prod_size', 'custom_col_name', 'custom_col_val',
+    'prod_author', 'prod_binding' # Added for Books
 ]
 
 if 'products' not in st.session_state:
@@ -59,8 +60,6 @@ if 'quill_content_short' not in st.session_state:
 for key in default_keys:
     if key not in st.session_state:
         st.session_state[key] = ""
-    if key == 'prod_brand' and not st.session_state[key]: st.session_state[key] = DEFAULT_BRAND
-    if key == 'prod_material' and not st.session_state[key]: st.session_state[key] = DEFAULT_MATERIAL
 
 # --- HELPER FUNCTIONS ---
 
@@ -73,8 +72,6 @@ def format_to_html_list(text):
 def clear_form():
     for key in default_keys:
         st.session_state[key] = ""
-    st.session_state['prod_brand'] = DEFAULT_BRAND
-    st.session_state['prod_material'] = DEFAULT_MATERIAL
     st.session_state.quill_content_full = "" 
     st.session_state.quill_content_short = "" 
     st.session_state.quill_key += 1 
@@ -87,6 +84,8 @@ def load_product_for_edit(index):
     st.session_state['prod_color'] = product.get('color', '')
     st.session_state['prod_material'] = product.get('main_material', '')
     st.session_state['prod_size'] = product.get('size', '') 
+    st.session_state['prod_author'] = product.get('author', '') 
+    st.session_state['prod_binding'] = product.get('binding', '') 
     
     st.session_state.quill_content_full = product.get('description', '')
     st.session_state.quill_content_short = product.get('short_description', '')
@@ -116,13 +115,12 @@ def load_category_data():
     return pd.DataFrame(), {}, []
 
 def create_output_df(product_list):
-    # We include supplier_duplicate here internally
     standard_columns = [
         'sku_supplier_config', 'supplier_simple', 'seller_sku', 'name', 'brand', 'categories', 
         'product_weight', 'package_type', 'package_quantities', 
         'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 'size',
-        'description', 'short_description', 'package_content', 'supplier', 'supplier_duplicate',
-        'shipment_type'
+        'author', 'binding', 'description', 'short_description', 'package_content', 
+        'supplier', 'supplier_duplicate', 'shipment_type'
     ]
     df = pd.DataFrame(product_list)
     for col in standard_columns:
@@ -135,7 +133,6 @@ def save_product_callback():
         st.error("Product Name is required.")
         return
     
-    # Resolve Category
     cat_path = st.session_state.get('cat_selector_a', DEFAULT_CATEGORY_PATH)
     if cat_path == DEFAULT_CATEGORY_PATH:
         cat_path = st.session_state.get('cat_selector_b', DEFAULT_CATEGORY_PATH)
@@ -146,7 +143,6 @@ def save_product_callback():
         return
 
     sku = generate_sku_config(st.session_state['prod_name'])
-    
     box_raw = st.session_state['prod_in_box'].strip()
     package_content_html = format_to_html_list(box_raw if box_raw else st.session_state['prod_name'])
 
@@ -162,10 +158,11 @@ def save_product_callback():
         'color': st.session_state['prod_color'],
         'main_material': st.session_state['prod_material'],
         'size': st.session_state.get('prod_size', ''), 
+        'author': st.session_state.get('prod_author', ''),
+        'binding': st.session_state.get('prod_binding', ''),
         **TEMPLATE_DATA
     }
     
-    # LOGIC: Duplicate Supplier and Remove Spaces
     raw_supplier = new_product.get('supplier', '')
     new_product['supplier_duplicate'] = raw_supplier.replace(" ", "")
 
@@ -200,7 +197,6 @@ tab1, tab2 = st.tabs(["Browse by Department", "Global Search"])
 selected_category_path = DEFAULT_CATEGORY_PATH
 selected_root_check = "" 
 
-# Tab 1: Browse
 with tab1:
     col_dept, col_cat = st.columns([1, 2])
     with col_dept:
@@ -215,7 +211,6 @@ with tab1:
         else:
             st.selectbox("Step B: Select Specific Category", options=["First select a department"], disabled=True)
 
-# Tab 2: Search
 with tab2:
     search_query = st.text_input("Type a keyword", key='search_query')
     if search_query:
@@ -232,17 +227,14 @@ with tab2:
         else:
             st.warning("No categories found.")
 
-# --- CHECK FOR FASHION ---
-is_fashion = False
-if selected_category_path != DEFAULT_CATEGORY_PATH:
-    final_code = path_to_code.get(selected_category_path, '')
-    st.success(f"Selected: {selected_category_path} (Code: {final_code})")
-    
-    if selected_root_check == "Fashion":
-        is_fashion = True
-else:
-    st.warning("Please select a category above.")
+# --- DYNAMIC DEFAULTS BASED ON CATEGORY ---
+current_brand_default = DEFAULT_BRAND
+if selected_root_check == "Fashion":
+    current_brand_default = "Fashion"
 
+# Apply default brand only if the field is empty or resetting
+if not st.session_state['prod_brand'] or (st.session_state['prod_brand'] in [DEFAULT_BRAND, "Fashion"]):
+    st.session_state['prod_brand'] = current_brand_default
 
 # --- 2. PRODUCT DETAILS FORM ---
 st.markdown("---")
@@ -255,16 +247,27 @@ c_name, c_brand = st.columns([3, 1])
 c_name.text_input("Product Name", key='prod_name')
 c_brand.text_input("Brand", key='prod_brand')
 
-# Dynamic Columns: If Fashion, show Size
-if is_fashion:
+# Dynamic Columns for Fashion
+if selected_root_check == "Fashion":
     col_clr, col_mat, col_size = st.columns([1, 1, 1])
     col_clr.text_input("Color", key='prod_color')
-    col_mat.text_input("Main Material", key='prod_material')
+    col_mat.text_input("Main Material", key='prod_material', value=DEFAULT_MATERIAL)
     col_size.text_input("Size", key='prod_size', placeholder="e.g., M, L, XL, 42")
+
+# Dynamic Columns for Books
+elif selected_root_check == "Books":
+    col_auth, col_bind = st.columns(2)
+    col_auth.text_input("Author", key='prod_author')
+    col_bind.selectbox("Binding", options=["Paperback", "Hardcover", "Spiral", "Other"], key='prod_binding')
+    
+    # Hide standard color/material or set to default
+    st.session_state['prod_color'] = ""
+    st.session_state['prod_material'] = "-"
+
 else:
     col_clr, col_mat = st.columns(2)
     col_clr.text_input("Color", key='prod_color')
-    col_mat.text_input("Main Material", key='prod_material')
+    col_mat.text_input("Main Material", key='prod_material', value=DEFAULT_MATERIAL)
 
 st.subheader("Full Description")
 st.session_state['current_quill_full'] = st_quill(
@@ -307,32 +310,25 @@ if st.session_state.products:
         with st.container():
             st.markdown("---")
             c1, c2, c3, c4 = st.columns([4, 2, 1, 1])
-            
             is_editing = (st.session_state.edit_index == i)
             name_display = f"Editing: {p['name']}" if is_editing else p['name']
-            
             c1.write(f"**{name_display}**")
             c2.text(p['categories'])
             c3.button("Edit", key=f"e_{i}", on_click=load_product_for_edit, args=(i,))
             if c4.button("Delete", key=f"d_{i}"):
                 st.session_state.products.pop(i)
-                if st.session_state.edit_index == i:
-                    clear_form()
+                if st.session_state.edit_index == i: clear_form()
                 st.rerun()
 
     final_df = create_output_df(st.session_state.products)
-    
-    # --- RENAME FOR EXPORT ONLY ---
     export_df = final_df.copy()
     export_columns = list(export_df.columns)
-    # Rename 'supplier_duplicate' to 'supplier' -> results in two 'supplier' columns
     export_columns = ['supplier' if col == 'supplier_duplicate' else col for col in export_columns]
     export_df.columns = export_columns
     
     csv = export_df.to_csv(index=False).encode('utf-8')
     st.markdown("---")
     
-    # GENERATE FILENAME
     first_name = st.session_state.products[0]['name'] if st.session_state.products else "Export"
     clean_name = re.sub(r'[^a-zA-Z0-9]', '_', first_name).strip('_')
     final_filename = f"{clean_name}_warehouse_RTv.csv"
