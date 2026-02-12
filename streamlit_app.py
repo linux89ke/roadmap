@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import base64
 import os
 
 # --- IMPORT QUILL ---
@@ -30,7 +31,7 @@ TEMPLATE_DATA = {
     'cost': 1,          
     'supplier': 'MarketPlace forfeited items',
     'shipment_type': 'Own Warehouse',
-    'supplier_simple': '-', 
+    'supplier_simple': '-',
     'supplier_duplicate': '', 
 }
 
@@ -38,7 +39,7 @@ TEMPLATE_DATA = {
 default_keys = [
     'prod_name', 'prod_brand', 'prod_color', 'prod_material', 
     'prod_in_box', 'prod_size', 'custom_col_name', 'custom_col_val',
-    'prod_author', 'prod_binding' # Added for Books
+    'prod_author', 'prod_binding'  # NEW: Added author and binding
 ]
 
 if 'products' not in st.session_state:
@@ -56,11 +57,27 @@ if 'quill_content_full' not in st.session_state:
 if 'quill_content_short' not in st.session_state:
     st.session_state.quill_content_short = "" 
 
+if 'selected_department' not in st.session_state:
+    st.session_state.selected_department = ""
+
 for key in default_keys:
     if key not in st.session_state:
         st.session_state[key] = ""
+    if key == 'prod_brand' and not st.session_state[key]: 
+        st.session_state[key] = DEFAULT_BRAND
+    if key == 'prod_material' and not st.session_state[key]: 
+        st.session_state[key] = DEFAULT_MATERIAL
 
 # --- HELPER FUNCTIONS ---
+
+def get_department_default_brand(department):
+    """Return default brand based on department"""
+    if department == "Books, Movies and Music":
+        return "Jumia Book"
+    elif department == "Fashion":
+        return "Fashion"
+    else:
+        return DEFAULT_BRAND
 
 def format_to_html_list(text):
     if not text: return ''
@@ -71,6 +88,10 @@ def format_to_html_list(text):
 def clear_form():
     for key in default_keys:
         st.session_state[key] = ""
+    # Set brand based on current department
+    current_dept = st.session_state.get('selected_department', '')
+    st.session_state['prod_brand'] = get_department_default_brand(current_dept)
+    st.session_state['prod_material'] = DEFAULT_MATERIAL
     st.session_state.quill_content_full = "" 
     st.session_state.quill_content_short = "" 
     st.session_state.quill_key += 1 
@@ -82,11 +103,9 @@ def load_product_for_edit(index):
     st.session_state['prod_brand'] = product.get('brand', '')
     st.session_state['prod_color'] = product.get('color', '')
     st.session_state['prod_material'] = product.get('main_material', '')
-    
-    # Specifics
     st.session_state['prod_size'] = product.get('size', '') 
-    st.session_state['prod_author'] = product.get('author', '') 
-    st.session_state['prod_binding'] = product.get('binding', '') 
+    st.session_state['prod_author'] = product.get('author', '')  # NEW
+    st.session_state['prod_binding'] = product.get('binding', '')  # NEW
     
     st.session_state.quill_content_full = product.get('description', '')
     st.session_state.quill_content_short = product.get('short_description', '')
@@ -110,21 +129,19 @@ def load_category_data():
     if os.path.exists(FILE_NAME_CSV):
         df = pd.read_csv(FILE_NAME_CSV, dtype=str)
         df['category'] = df['category'].str.strip()
-        # Create Root Category (Department) by splitting the path
         df['root_category'] = df['category'].apply(lambda x: str(x).split('\\')[0] if pd.notna(x) else "Other")
         path_to_code = df.set_index('category')['categories'].to_dict()
         return df, path_to_code, sorted(df['root_category'].unique().tolist())
     return pd.DataFrame(), {}, []
 
 def create_output_df(product_list):
-    # DEFINE ALL EXPORT COLUMNS HERE
+    # Include all possible columns
     standard_columns = [
         'sku_supplier_config', 'supplier_simple', 'seller_sku', 'name', 'brand', 'categories', 
         'product_weight', 'package_type', 'package_quantities', 
         'variation', 'price', 'tax_class', 'cost', 'color', 'main_material', 'size',
-        'author', 'binding', # <--- NEW COLUMNS FOR BOOKS
-        'description', 'short_description', 'package_content', 
-        'supplier', 'supplier_duplicate', 'shipment_type'
+        'description', 'short_description', 'package_content', 'supplier', 'supplier_duplicate',
+        'shipment_type', 'author', 'binding'  # NEW: Added author and binding
     ]
     df = pd.DataFrame(product_list)
     for col in standard_columns:
@@ -137,6 +154,7 @@ def save_product_callback():
         st.error("Product Name is required.")
         return
     
+    # Resolve Category
     cat_path = st.session_state.get('cat_selector_a', DEFAULT_CATEGORY_PATH)
     if cat_path == DEFAULT_CATEGORY_PATH:
         cat_path = st.session_state.get('cat_selector_b', DEFAULT_CATEGORY_PATH)
@@ -147,6 +165,7 @@ def save_product_callback():
         return
 
     sku = generate_sku_config(st.session_state['prod_name'])
+    
     box_raw = st.session_state['prod_in_box'].strip()
     package_content_html = format_to_html_list(box_raw if box_raw else st.session_state['prod_name'])
 
@@ -161,12 +180,13 @@ def save_product_callback():
         'brand': st.session_state['prod_brand'],
         'color': st.session_state['prod_color'],
         'main_material': st.session_state['prod_material'],
-        'size': st.session_state.get('prod_size', ''), 
-        'author': st.session_state.get('prod_author', ''),     # <--- SAVE AUTHOR
-        'binding': st.session_state.get('prod_binding', ''),   # <--- SAVE BINDING
+        'size': st.session_state.get('prod_size', ''),
+        'author': st.session_state.get('prod_author', ''),  # NEW
+        'binding': st.session_state.get('prod_binding', ''),  # NEW
         **TEMPLATE_DATA
     }
     
+    # LOGIC: Duplicate Supplier and Remove Spaces
     raw_supplier = new_product.get('supplier', '')
     new_product['supplier_duplicate'] = raw_supplier.replace(" ", "")
 
@@ -201,10 +221,18 @@ tab1, tab2 = st.tabs(["Browse by Department", "Global Search"])
 selected_category_path = DEFAULT_CATEGORY_PATH
 selected_root_check = "" 
 
+# Tab 1: Browse
 with tab1:
     col_dept, col_cat = st.columns([1, 2])
     with col_dept:
         selected_root = st.selectbox("Step A: Choose Department", options=["Select Department"] + root_list, key='dept_selector')
+        # Update selected department in session state and update brand default
+        if selected_root and selected_root != "Select Department":
+            if st.session_state.selected_department != selected_root:
+                st.session_state.selected_department = selected_root
+                # Only update brand if not currently editing
+                if st.session_state.edit_index is None:
+                    st.session_state['prod_brand'] = get_department_default_brand(selected_root)
     with col_cat:
         if selected_root and selected_root != "Select Department":
             filtered_paths = sorted(cat_df[cat_df['root_category'] == selected_root]['category'].dropna().unique().tolist())
@@ -215,6 +243,7 @@ with tab1:
         else:
             st.selectbox("Step B: Select Specific Category", options=["First select a department"], disabled=True)
 
+# Tab 2: Search
 with tab2:
     search_query = st.text_input("Type a keyword", key='search_query')
     if search_query:
@@ -228,28 +257,28 @@ with tab2:
                     row = cat_df[cat_df['category'] == cat_sel_b]
                     if not row.empty:
                         selected_root_check = row.iloc[0]['root_category']
+                        # Update department and brand when selecting from search
+                        if st.session_state.selected_department != selected_root_check:
+                            st.session_state.selected_department = selected_root_check
+                            # Only update brand if not currently editing
+                            if st.session_state.edit_index is None:
+                                st.session_state['prod_brand'] = get_department_default_brand(selected_root_check)
         else:
             st.warning("No categories found.")
 
-# --- CHECK FOR SPECIAL CATEGORIES ---
+# --- CHECK FOR FASHION AND BOOKS ---
+is_fashion = False
+is_books = False
 if selected_category_path != DEFAULT_CATEGORY_PATH:
     final_code = path_to_code.get(selected_category_path, '')
     st.success(f"Selected: {selected_category_path} (Code: {final_code})")
-
-
-# --- DYNAMIC DEFAULTS BASED ON DEPARTMENT ---
-# Logic: Check specific Department names (root categories)
-current_brand_default = DEFAULT_BRAND
-
-if selected_root_check == "Fashion":
-    current_brand_default = "Fashion"
-elif selected_root_check == "Books, Movies and Music":
-    current_brand_default = "Jumia Book"
-
-# Apply default brand Logic
-# Updates if the field is empty OR if it currently holds one of the other system defaults
-if not st.session_state['prod_brand'] or st.session_state['prod_brand'] in [DEFAULT_BRAND, "Fashion", "Jumia Book"]:
-    st.session_state['prod_brand'] = current_brand_default
+    
+    if selected_root_check == "Fashion":
+        is_fashion = True
+    elif selected_root_check == "Books, Movies and Music":
+        is_books = True
+else:
+    st.warning("Please select a category above.")
 
 
 # --- 2. PRODUCT DETAILS FORM ---
@@ -263,40 +292,27 @@ c_name, c_brand = st.columns([3, 1])
 c_name.text_input("Product Name", key='prod_name')
 c_brand.text_input("Brand", key='prod_brand')
 
-# --- DYNAMIC INPUT FIELDS ---
-if selected_root_check == "Fashion":
-    # FASHION: Size, Color, Material
+# Dynamic Columns Based on Department
+if is_fashion:
+    # Fashion: Show Color, Material, Size
     col_clr, col_mat, col_size = st.columns([1, 1, 1])
     col_clr.text_input("Color", key='prod_color')
-    col_mat.text_input("Main Material", key='prod_material', value=DEFAULT_MATERIAL)
+    col_mat.text_input("Main Material", key='prod_material')
     col_size.text_input("Size", key='prod_size', placeholder="e.g., M, L, XL, 42")
-    
-    # Hide Books fields
-    st.session_state['prod_author'] = ""
-    st.session_state['prod_binding'] = ""
-
-elif selected_root_check == "Books, Movies and Music":
-    # BOOKS: Author, Binding
-    col_auth, col_bind = st.columns(2)
-    col_auth.text_input("Author", key='prod_author')
-    col_bind.selectbox("Binding", options=["-", "Paperback", "Hardcover", "Spiral Bound", "Board Book"], key='prod_binding')
-    
-    # Hide Fashion/Generic fields
-    st.session_state['prod_color'] = ""
-    st.session_state['prod_material'] = "-"
-    st.session_state['prod_size'] = ""
-
-else:
-    # GENERIC / OTHER: Color, Material
+elif is_books:
+    # Books: Show Color, Material, Author, Binding
     col_clr, col_mat = st.columns(2)
     col_clr.text_input("Color", key='prod_color')
-    col_mat.text_input("Main Material", key='prod_material', value=DEFAULT_MATERIAL)
+    col_mat.text_input("Main Material", key='prod_material')
     
-    # Hide irrelevant fields
-    st.session_state['prod_size'] = ""
-    st.session_state['prod_author'] = ""
-    st.session_state['prod_binding'] = ""
-
+    col_author, col_binding = st.columns(2)
+    col_author.text_input("Author", key='prod_author', placeholder="Author name")
+    col_binding.text_input("Binding", key='prod_binding', placeholder="e.g., Paperback, Hardcover")
+else:
+    # Default: Show Color and Material only
+    col_clr, col_mat = st.columns(2)
+    col_clr.text_input("Color", key='prod_color')
+    col_mat.text_input("Main Material", key='prod_material')
 
 st.subheader("Full Description")
 st.session_state['current_quill_full'] = st_quill(
@@ -339,14 +355,17 @@ if st.session_state.products:
         with st.container():
             st.markdown("---")
             c1, c2, c3, c4 = st.columns([4, 2, 1, 1])
+            
             is_editing = (st.session_state.edit_index == i)
             name_display = f"Editing: {p['name']}" if is_editing else p['name']
+            
             c1.write(f"**{name_display}**")
             c2.text(p['categories'])
             c3.button("Edit", key=f"e_{i}", on_click=load_product_for_edit, args=(i,))
             if c4.button("Delete", key=f"d_{i}"):
                 st.session_state.products.pop(i)
-                if st.session_state.edit_index == i: clear_form()
+                if st.session_state.edit_index == i:
+                    clear_form()
                 st.rerun()
 
     final_df = create_output_df(st.session_state.products)
