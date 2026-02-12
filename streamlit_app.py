@@ -169,6 +169,11 @@ def save_product_callback():
     box_raw = st.session_state['prod_in_box'].strip()
     package_content_html = format_to_html_list(box_raw if box_raw else st.session_state['prod_name'])
 
+    # Use dash for main_material if empty or default
+    material_value = st.session_state['prod_material'].strip()
+    if not material_value or material_value == DEFAULT_MATERIAL:
+        material_value = '-'
+    
     new_product = {
         'name': st.session_state['prod_name'],
         'description': st.session_state.get('current_quill_full', ''),      
@@ -179,7 +184,7 @@ def save_product_callback():
         'categories': code, 
         'brand': st.session_state['prod_brand'],
         'color': st.session_state['prod_color'],
-        'main_material': st.session_state['prod_material'],
+        'main_material': material_value,
         'size': st.session_state.get('prod_size', ''),
         'author': st.session_state.get('prod_author', ''),  # NEW
         'binding': st.session_state.get('prod_binding', ''),  # NEW
