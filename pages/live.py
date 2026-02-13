@@ -3,8 +3,53 @@ import pandas as pd
 import io
 import zipfile
 
+# Mapping dictionary for categories
+CATEGORY_MAPPING = {
+    'AU': 'Automotive',
+    'BM': 'Books & Magazines',
+    'BN': 'Beddings & Linens',
+    'CA': 'Car Accessories',
+    'CL': 'Computers & Laptops',
+    'CM': 'Cameras',
+    'CP': 'Cleaning Products',
+    'DR': 'Drinks',
+    'DS': 'DVD, software and ebooks',
+    'DV': 'Dietary Supplements & Vitamins',
+    'EA': 'Electronics & Phone Accessories',
+    'EC': 'Electronic Gaming',
+    'EL': 'Electronics',
+    'FA': 'Fashion',
+    'FC': 'Fashion Accessories',
+    'FD': 'Furniture & Decor',
+    'FF': 'Fresh Food & Grocery',
+    'FS': 'Footwear & Shoes',
+    'HA': 'Home Appliances',
+    'HB': 'Health & Beauty',
+    'HL': 'Home & Living',
+    'IP': 'Industrial, Scientific & Power Tools',
+    'LB': 'Lights & Bulbs',
+    'LS': 'Livestock',
+    'LU': 'Luggages & Baggages',
+    'MI': 'Musical Instruments',
+    'MP': 'Mobile Phones & Tablets',
+    'MW': 'Men & Women Clothes',
+    'OP': 'Oils, Paints & Fluids',
+    'OT': 'Other',
+    'PB': 'Plumbing',
+    'PF': 'Perfume',
+    'SE': 'Sports & Fitness Equipment',
+    'SH': 'Shoes',
+    'SK': 'Sewing & Knitting',
+    'SL': 'Swimsuits & Lingeries',
+    'SN': 'Stationeries',
+    'ST': 'Skincare & Toileteries',
+    'TB': 'Toys & Board Games',
+    'TG': 'Toys & Baby',
+    'VP': 'Vehicle & Parts'
+}
+
 st.title("SKU Category Splitter & Formatter")
-st.write("Upload your SKU list to split it into category-specific Excel files with custom naming.")
+st.write("Upload your SKU list to split it into category-specific CSV files with full descriptive names.")
 
 # File uploader
 uploaded_file = st.file_uploader("Upload SKU List (CSV or Excel)", type=["csv", "xlsx"])
@@ -24,10 +69,7 @@ if uploaded_file is not None:
         sku_col = st.selectbox("Select the SKU column", options=cols, index=0)
         cat_col = st.selectbox("Select the Category column", options=cols, index=1 if len(cols) > 1 else 0)
 
-        # Let user define a prefix for the filenames
-        file_prefix = st.text_input("Enter filename prefix", value="MPL_Update")
-
-        if st.button("Generate Excel Zip"):
+        if st.button("Generate CSV Zip"):
             # Prepare the data
             processed_df = df[[sku_col, cat_col]].copy()
             processed_df.rename(columns={sku_col: 'sku'}, inplace=True)
@@ -50,25 +92,25 @@ if uploaded_file is not None:
                     # Filter data for the specific category
                     cat_df = processed_df[processed_df[cat_col] == cat][output_cols]
                     
-                    # Create an in-memory Excel file
-                    excel_buffer = io.BytesIO()
-                    with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-                        cat_df.to_excel(writer, index=False, sheet_name='Sheet1')
+                    # Convert to tab-separated string (matching original template)
+                    csv_data = cat_df.to_csv(sep='\t', index=False)
                     
-                    # UPDATED NAMING LOGIC HERE
-                    file_name = f"{file_prefix}_{cat}.xlsx"
+                    # Get full name from mapping
+                    full_name = CATEGORY_MAPPING.get(str(cat).strip(), str(cat))
+                    # Sanitize filename
+                    file_name = f"{full_name.replace('/', '_').replace('\\', '_')}.csv"
                     
-                    # Add Excel buffer to zip
-                    zip_file.writestr(file_name, excel_buffer.getvalue())
+                    # Add CSV data to zip
+                    zip_file.writestr(file_name, csv_data)
 
             # Download button
             st.download_button(
-                label="Download Named Excel Files (.zip)",
+                label="Download Categories as CSV (.zip)",
                 data=zip_buffer.getvalue(),
-                file_name="categorized_sku_updates.zip",
+                file_name="categorized_sku_csv_updates.zip",
                 mime="application/zip"
             )
-            st.info(f"Processed {len(categories)} categories with custom naming.")
+            st.info(f"Processed {len(categories)} categories.")
 
     except Exception as e:
         st.error(f"Error: {e}")
