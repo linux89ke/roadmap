@@ -403,13 +403,13 @@ if src_file and tpl_file and cat_file:
                            file_name="mapped_products.csv", mime="text/csv",
                            use_container_width=True)
     with dl2:
-        st.download_button("📥 Download XLSX",
+        st.download_button(" Download XLSX",
                            data=xlsx_buf.getvalue(),
                            file_name="mapped_products.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            use_container_width=True)
 
-    with st.expander("📖 Browse Category Map"):
+    with st.expander(" Browse Category Map"):
         search = st.text_input("Search category name…")
         disp = cats[cats["name"].str.contains(search, case=False, na=False)] if search else cats.head(100)
         st.dataframe(disp, use_container_width=True)
@@ -417,16 +417,4 @@ if src_file and tpl_file and cat_file:
 else:
     st.info("👆 Upload all three required files (source, template, category map) to begin.")
 
-    with st.expander("ℹ️ How layered matching works"):
-        st.markdown("""
-| Layer | Method | Example |
-|---|---|---|
-| 1 | **Manual table** | `Woven Bikini` → pre-mapped to `Bikinis` ID, always wins |
-| 2 | **Exact match** | `Cardigan` → `Cardigan` |
-| 3 | **Regex stripping** | `Long Sleeve T-Shirt` → strip modifier → `T-Shirt` → `T-Shirts` |
-| 4 | **Spelling fix** | `Suveter` → corrected to `sweater` → `Sweaters` |
-| 5 | **Fuzzy match** | `Sweat Shirt` → 87% → `Hoodies & Sweatshirts` |
-| 6 | **Unmatched** | Flagged, downloadable for manual fix |
 
-Upload **`category_mapping.csv`** (included below) as the 4th file to pre-seed 129/130 classes instantly.
-        """)
