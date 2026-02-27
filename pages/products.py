@@ -8,7 +8,7 @@ import pandas as pd
 import io
 import re
 
-st.set_page_config(page_title="Defacto Product Mapper", page_icon="🗂️", layout="wide")
+st.set_page_config(page_title="Product Mapper", layout="wide")
 
 st.markdown("""
 <style>
@@ -26,7 +26,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🗂️ Defacto → Template Mapper")
+st.title("Template Mapper")
 st.caption("Upload your source product file, output template, category map, and optionally a custom mapping table.")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -183,25 +183,25 @@ def build_desc(row, brand):
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     st.markdown('<div class="upload-card">', unsafe_allow_html=True)
-    st.subheader("📦 Source File")
+    st.subheader("Source File")
     src_file = st.file_uploader("Source xlsx", type=["xlsx","xls"], key="src",
                                  label_visibility="collapsed")
     st.markdown('</div>', unsafe_allow_html=True)
 with c2:
     st.markdown('<div class="upload-card">', unsafe_allow_html=True)
-    st.subheader("📄 Template")
+    st.subheader("Template")
     tpl_file = st.file_uploader("Template csv", type=["csv","xlsx"], key="tpl",
                                  label_visibility="collapsed")
     st.markdown('</div>', unsafe_allow_html=True)
 with c3:
     st.markdown('<div class="upload-card">', unsafe_allow_html=True)
-    st.subheader("🏷️ Category Map")
+    st.subheader("Category Map")
     cat_file = st.file_uploader("Category xlsx", type=["xlsx","xls"], key="cat",
                                  label_visibility="collapsed")
     st.markdown('</div>', unsafe_allow_html=True)
 with c4:
     st.markdown('<div class="upload-card">', unsafe_allow_html=True)
-    st.subheader("🔁 Class Mapping")
+    st.subheader("Class Mapping")
     st.caption("Optional: upload category_mapping.csv to pre-seed 129/130 matches")
     map_file = st.file_uploader("Mapping csv", type=["csv"], key="map",
                                  label_visibility="collapsed")
