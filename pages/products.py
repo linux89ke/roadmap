@@ -415,6 +415,6 @@ if src_file and tpl_file and cat_file:
         st.dataframe(disp, use_container_width=True)
 
 else:
-    st.info("👆 Upload all three required files (source, template, category map) to begin.")
+    st.info(" Upload all three required files")
 
 
